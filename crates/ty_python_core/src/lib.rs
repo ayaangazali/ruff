@@ -291,6 +291,12 @@ pub struct SemanticIndex<'db> {
     /// Map expressions to their corresponding scope.
     scopes_by_expression: ExpressionsScopeMap,
 
+    /// Place loads that use all bindings reachable in their scope.
+    deferred_place_loads: FrozenSet<ExpressionNodeKey>,
+
+    /// Whether type inference must classify place loads outside a known deferred context.
+    unclassified_place_loads_require_inference: bool,
+
     /// Map from a node creating a definition to its definition.
     definitions_by_node: DefinitionsByNode<'db>,
 
@@ -414,6 +420,21 @@ impl<'db> SemanticIndex<'db> {
         E: HasTrackedScope,
     {
         self.scopes_by_expression.try_get(expression)
+    }
+
+    /// Returns whether a place load uses all bindings reachable in its scope.
+    ///
+    /// Returns `None` when answering requires type inference. Callers that do
+    /// not already have that information should treat the load as unsupported.
+    pub fn place_load_is_deferred(&self, expression: ast::ExprRef<'_>) -> Option<bool> {
+        let expression = ExpressionNodeKey::from(expression);
+        if self.deferred_place_loads.contains(&expression) {
+            Some(true)
+        } else if self.unclassified_place_loads_require_inference {
+            None
+        } else {
+            Some(false)
+        }
     }
 
     /// Returns the [`Scope`] of the `expression`'s enclosing scope.
@@ -1073,7 +1094,7 @@ mod tests {
         files::{File, system_path_to_file},
         parsed::ParsedModuleRef,
     };
-    use ruff_python_ast as ast;
+    use ruff_python_ast::{self as ast, helpers::NameFinder, visitor::Visitor};
     use ruff_text_size::{Ranged, TextRange};
 
     use super::*;
@@ -1169,6 +1190,42 @@ mod tests {
             declaration.kind(&db),
             DefinitionKind::AnnotatedAssignment(_)
         ));
+    }
+
+    #[test]
+    fn place_load_deferredness() {
+        // A misplaced future import still defers annotations throughout the module.
+        assert_place_load_deferredness(
+            "test.py",
+            r#"
+model = load_model()
+handler: Handler
+fallback = load_fallback()
+
+from __future__ import annotations
+"#,
+            &[
+                ("load_model", Some(false)),
+                ("Handler", Some(true)),
+                ("load_fallback", Some(false)),
+            ],
+        );
+
+        // Stub annotations are deferred; other expressions require type inference to determine
+        // whether they are part of a type declaration.
+        assert_place_load_deferredness(
+            "test.pyi",
+            r#"
+default_handler = DEFAULT_HANDLER
+handler: Handler
+fallback_handler = FALLBACK_HANDLER
+"#,
+            &[
+                ("DEFAULT_HANDLER", None),
+                ("Handler", Some(true)),
+                ("FALLBACK_HANDLER", None),
+            ],
+        );
     }
 
     #[test]
@@ -2032,5 +2089,34 @@ match 1:
             .unwrap();
 
         assert!(matches!(binding.kind(&db), DefinitionKind::For(_)));
+    }
+
+    fn assert_place_load_deferredness(
+        path: &str,
+        python_source: &str,
+        expected: &[(&str, Option<bool>)],
+    ) {
+        let db = TestDbBuilder::new()
+            .with_file(path, python_source)
+            .build()
+            .unwrap();
+        let file = system_path_to_file(&db, path).unwrap();
+        let file = program_file(&db, file);
+        let module = parsed_module(&db, file.python_file(&db)).load(&db);
+        let index = semantic_index(&db, file);
+        let mut finder = NameFinder::default();
+        finder.visit_body(module.suite());
+
+        for &(name, expected) in expected {
+            let expression = finder
+                .names
+                .get(name)
+                .expect("expected name in test source");
+            assert_eq!(
+                index.place_load_is_deferred(ast::ExprRef::Name(expression)),
+                expected,
+                "{path}: {name}",
+            );
+        }
     }
 }
