@@ -37,6 +37,7 @@
 
 use std::cmp::Ordering;
 
+use ruff_db::files::system_path_to_file;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
 use ruff_python_ast::{self as ast, name::Name};
 use ruff_text_size::Ranged;
@@ -84,6 +85,9 @@ use crate::types::{ClassBase, KnownClass, ProgramEnvironment, Type, definition_e
 /// At runtime, pytest resolves `consumer`'s `dependency` parameter to
 /// `TestOverride.dependency`; this query instead resolves it to the
 /// module-level `dependency` fixture.
+///
+/// This query searches the parameter's class hierarchy, module, and enclosing conftest hierarchy.
+/// Built-in and plugin fixtures are added by later provider layers.
 #[salsa::tracked(returns(ref), heap_size=ruff_memory_usage::heap_size)]
 pub fn fixture_bindings_for_parameter<'db>(
     db: &'db dyn Db,
@@ -107,8 +111,28 @@ pub fn fixture_bindings_for_parameter<'db>(
         }
     }
 
-    let module_scope = global_scope(db, parameter.program_file(db));
-    bindings_in_provider(db, &request, FixtureProvider::Scope(module_scope))
+    let request_file = parameter.program_file(db);
+    let bindings = bindings_in_provider(
+        db,
+        &request,
+        FixtureProvider::Scope(global_scope(db, request_file)),
+    );
+    if !bindings.is_empty() {
+        return bindings;
+    }
+
+    for conftest in conftest_files(db, request_file) {
+        let bindings = bindings_in_provider(
+            db,
+            &request,
+            FixtureProvider::Scope(global_scope(db, *conftest)),
+        );
+        if !bindings.is_empty() {
+            return bindings;
+        }
+    }
+
+    Box::default()
 }
 
 /// A pytest fixture request and the declaration selected by static provider lookup.
@@ -447,6 +471,40 @@ fn class_mro_scopes<'db>(
     scopes
 }
 
+/// Returns applicable `conftest.py` files from nearest to outermost.
+#[salsa::tracked(returns(ref), heap_size=ruff_memory_usage::heap_size)]
+fn conftest_files<'db>(db: &'db dyn Db, request_file: ProgramFile<'db>) -> Box<[ProgramFile<'db>]> {
+    let file = request_file.file(db);
+    let Some(path) = file.path(db).as_system_path() else {
+        return Box::default();
+    };
+    let Some(file_root) = db.files().root(db, path) else {
+        return Box::default();
+    };
+    let root = file_root.path(db);
+    let Some(request_directory) = path.parent() else {
+        return Box::default();
+    };
+
+    // The current conftest's module scope was already searched above. Starting at its parent avoids
+    // processing the same provider twice and lets same-name overrides continue outward.
+    let start_directory = if path.file_name() == Some("conftest.py") {
+        request_directory.parent()
+    } else {
+        Some(request_directory)
+    };
+    let Some(start_directory) = start_directory else {
+        return Box::default();
+    };
+
+    start_directory
+        .ancestors()
+        .take_while(|directory| directory.starts_with(root))
+        .filter_map(|directory| system_path_to_file(db, directory.join("conftest.py")).ok())
+        .map(|file| ProgramFile::new(db, file, request_file.program(db)))
+        .collect()
+}
+
 /// Exposes a declaration under its explicit fixture name or local Python binding name.
 fn fixture_exposure<'db>(
     symbol_name: &Name,
@@ -780,6 +838,7 @@ mod tests {
     };
     use ruff_db::files::system_path_to_file;
     use ruff_db::parsed::parsed_module;
+    use ruff_db::system::DbWithWritableSystem;
     use ruff_python_ast as ast;
     use ty_python_core::definition::Definition;
     use ty_python_core::semantic_index;
@@ -1681,6 +1740,273 @@ def test_use(resource): ...
         ");
     }
 
+    #[test]
+    fn resolves_nearest_to_outermost_conftest_providers() {
+        let test_file = "/src/project/tests/test_example.py";
+        let test = PytestTestCase::with_files(
+            test_file,
+            &[
+                (
+                    "/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def outside_root(): ...
+"#,
+                ),
+                (
+                    "/src/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def root_fixture(): ...
+
+@pytest.fixture
+def shadowed(): ...
+
+@pytest.fixture
+def module_shadowed(): ...
+"#,
+                ),
+                (
+                    "/src/shared_fixtures.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def imported_fixture(): ...
+"#,
+                ),
+                (
+                    "/src/project/conftest.py",
+                    r#"
+import pytest
+from shared_fixtures import imported_fixture as conftest_alias
+
+@pytest.fixture
+def middle_fixture(): ...
+
+@pytest.fixture
+def shadowed(): ...
+"#,
+                ),
+                (
+                    "/src/project/tests/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def nearest_fixture(): ...
+
+@pytest.fixture
+def shadowed(): ...
+"#,
+                ),
+                (
+                    "/src/project/sibling/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def sibling_fixture(): ...
+"#,
+                ),
+                (
+                    "/src/project/tests/test_example.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def module_shadowed(): ...
+
+def test_use(
+    nearest_fixture,
+    middle_fixture,
+    root_fixture,
+    shadowed,
+    module_shadowed,
+    conftest_alias,
+    sibling_fixture,
+    outside_root,
+): ...
+"#,
+                ),
+            ],
+        );
+
+        let test_use = test.function("test_use");
+
+        assert_snapshot!(test_use.fixture_resolution("nearest_fixture"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+         --> src/project/tests/test_example.py:8:5
+          |
+        8 |     nearest_fixture,
+          |     ^^^^^^^^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/project/tests/conftest.py:5:5
+          |
+        5 | def nearest_fixture(): ...
+          |     ---------------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("middle_fixture"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+         --> src/project/tests/test_example.py:9:5
+          |
+        9 |     middle_fixture,
+          |     ^^^^^^^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/project/conftest.py:6:5
+          |
+        6 | def middle_fixture(): ...
+          |     --------------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("root_fixture"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+          --> src/project/tests/test_example.py:10:5
+           |
+        10 |     root_fixture,
+           |     ^^^^^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/conftest.py:5:5
+          |
+        5 | def root_fixture(): ...
+          |     ------------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("shadowed"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+          --> src/project/tests/test_example.py:11:5
+           |
+        11 |     shadowed,
+           |     ^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/project/tests/conftest.py:8:5
+          |
+        8 | def shadowed(): ...
+          |     --------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("module_shadowed"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+          --> src/project/tests/test_example.py:12:5
+           |
+        12 |     module_shadowed,
+           |     ^^^^^^^^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/project/tests/test_example.py:5:5
+          |
+        5 | def module_shadowed(): ...
+          |     ---------------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("conftest_alias"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+          --> src/project/tests/test_example.py:13:5
+           |
+        13 |     conftest_alias,
+           |     ^^^^^^^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/shared_fixtures.py:5:5
+          |
+        5 | def imported_fixture(): ...
+          |     ----------------
+        ");
+
+        assert_snapshot!(test_use.fixture_resolution("sibling_fixture"), @"No fixture resolved for parameter `sibling_fixture`");
+        assert_snapshot!(test_use.fixture_resolution("outside_root"), @"No fixture resolved for parameter `outside_root`");
+    }
+
+    #[test]
+    fn same_name_conftest_override_requests_outer_fixture() {
+        let test = PytestTestCase::with_files(
+            "/src/project/conftest.py",
+            &[
+                (
+                    "/src/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def value(): ...
+"#,
+                ),
+                (
+                    "/src/project/conftest.py",
+                    r#"
+import pytest
+
+@pytest.fixture
+def value(value): ...
+"#,
+                ),
+            ],
+        );
+
+        let fixture = test.function("value");
+
+        assert_snapshot!(fixture.fixture_resolution("value"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+         --> src/project/conftest.py:5:11
+          |
+        5 | def value(value): ...
+          |           ^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/conftest.py:5:5
+          |
+        5 | def value(): ...
+          |     -----
+        ");
+    }
+
+    #[test]
+    fn conftest_discovery_tracks_file_updates() {
+        let mut test = PytestTestCase::new(
+            "/src/project/test_example.py",
+            r#"
+def test_use(resource): ...
+"#,
+        );
+
+        assert_snapshot!(test.function("test_use").fixture_resolution("resource"), @"No fixture resolved for parameter `resource`");
+
+        test.write_file(
+            "/src/project/conftest.py",
+            r#"
+import pytest
+
+@pytest.fixture
+def resource(): ...
+"#,
+        );
+        assert_snapshot!(test.function("test_use").fixture_resolution("resource"), @"
+        info[pytest-fixture]: Resolve fixture for parameter
+         --> src/project/test_example.py:2:14
+          |
+        2 | def test_use(resource): ...
+          |              ^^^^^^^^ fixture requested here
+        info: Found 1 fixture
+         --> src/project/conftest.py:5:5
+          |
+        5 | def resource(): ...
+          |     --------
+        ");
+
+        test.write_file(
+            "/src/project/conftest.py",
+            r#"
+import pytest
+
+@pytest.fixture
+def replacement(): ...
+"#,
+        );
+        assert_snapshot!(test.function("test_use").fixture_resolution("resource"), @"No fixture resolved for parameter `resource`");
+    }
+
     struct PytestTestCase {
         db: TestDb,
         path: &'static str,
@@ -1699,6 +2025,12 @@ def test_use(resource): ...
                 db: pytest_db_with_files(files),
                 path,
             }
+        }
+
+        fn write_file(&mut self, path: &'static str, source: &'static str) {
+            self.db
+                .write_file(path, source)
+                .expect("valid pytest test file update");
         }
 
         fn function<'test>(&'test self, name: &str) -> PytestTestFunction<'test> {
