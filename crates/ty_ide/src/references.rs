@@ -9,6 +9,13 @@
 //! scope or within classes, are visible outside the module. Finding
 //! all references to these externally-visible symbols therefore requires
 //! an expensive search of all source files in the workspace.
+//!
+//! Find References is directional. A binding and a load are related when that binding might
+//! supply the load. A query on a binding returns that binding and every related load. A query on a
+//! load returns that load and every related binding; it does not expand through those bindings to
+//! other loads. Structural references such as keyword labels attach to the corresponding binding
+//! family. If the semantic model cannot represent every possible provider, the search falls back
+//! to the broader lexical symbol rather than omitting possible references.
 
 use crate::goto::{Definitions, GotoTarget};
 use crate::{Db, ReferenceKind, ReferenceTarget};
@@ -26,7 +33,7 @@ use ty_python_core::ProgramFile;
 use ty_python_core::definition::{Definition, DefinitionKind, DefinitionState};
 use ty_python_core::scope::{FileScopeId, NodeWithScopeKind, ScopeKind};
 use ty_python_semantic::{
-    ImportAliasResolution, ResolvedDefinition, SemanticModel, contains_identifier,
+    ImportAliasResolution, ResolvedDefinition, SemanticModel, ValueProviders, contains_identifier,
 };
 
 /// Salsa snapshots coordinate clone and drop through shared state. For cached files that don't
@@ -93,16 +100,24 @@ pub(crate) fn references(
 ) -> Option<Vec<ReferenceTarget>> {
     let source_file = file.file(db);
     let model = SemanticModel::new(db, file);
-    let target_definitions = goto_target.definitions(&model, mode.to_import_alias_resolution())?;
+    let symbol_definitions = goto_target.definitions(&model, mode.to_import_alias_resolution())?;
     let is_externally_visible_symbol =
-        has_any_external_visible_definitions(db, &target_definitions);
-    let target_definitions = target_definitions.goto_declaration(&model, goto_target)?;
-
+        has_any_external_visible_definitions(db, &symbol_definitions);
+    let symbol_definitions = symbol_definitions.goto_declaration(&model, goto_target)?;
+    let is_parameter = parameter_owner_is_externally_visible(db, &symbol_definitions);
     // Extract the target text from the goto target for fast comparison
     let target_text = goto_target.to_string()?;
+    let target = if matches!(
+        mode,
+        ReferencesMode::References | ReferencesMode::ReferencesSkipDeclaration
+    ) {
+        ReferenceSearchTarget::directional(&model, goto_target, symbol_definitions, &target_text)
+    } else {
+        ReferenceSearchTarget::Lexical(symbol_definitions)
+    };
 
     // Find all of the references to the symbol within this file
-    let mut references = references_for_file(db, file, &target_definitions, &target_text, mode);
+    let mut references = references_for_file(db, file, &target, &target_text, mode);
 
     // Check if we should search across files based on the mode
     let search_across_files = matches!(
@@ -115,8 +130,6 @@ pub(crate) fn references(
     // Parameters are local by scope, but they can have cross-file references via keyword
     // argument labels (e.g. `f(param=...)`). Handle this case with a narrow scan that only
     // considers keyword arguments.
-    let is_parameter = parameter_owner_is_externally_visible(db, &target_definitions);
-
     if search_across_files && (is_parameter || is_externally_visible_symbol) {
         let program = model.program();
         let files = db.project().files(db);
@@ -138,12 +151,12 @@ pub(crate) fn references(
                 let other_file = ProgramFile::new(db, other_file, program);
 
                 if is_externally_visible_symbol {
-                    references_for_file(db, other_file, &target_definitions, &target_text, mode)
+                    references_for_file(db, other_file, &target, &target_text, mode)
                 } else {
                     references_for_keyword_arguments_in_file(
                         db,
                         other_file,
-                        &target_definitions,
+                        &target,
                         &target_text,
                         mode,
                     )
@@ -162,10 +175,174 @@ pub(crate) fn references(
     }
 }
 
+#[derive(Debug)]
+enum ReferenceSearchTarget<'db> {
+    Binding {
+        bindings: Definitions<'db>,
+        structural: Definitions<'db>,
+        expand_structural: bool,
+        lexical: Definitions<'db>,
+    },
+    Load {
+        providers: Definitions<'db>,
+        selected: ReferenceTarget,
+        lexical: Definitions<'db>,
+    },
+    Lexical(Definitions<'db>),
+}
+
+impl<'db> ReferenceSearchTarget<'db> {
+    fn directional(
+        model: &SemanticModel<'db>,
+        goto_target: &GotoTarget<'_>,
+        lexical: Definitions<'db>,
+        target_text: &str,
+    ) -> Self {
+        let identity = OccurrenceIdentity::from_goto_target(model, goto_target, target_text);
+
+        match goto_target {
+            GotoTarget::Expression(ast::ExprRef::Name(name))
+                if matches!(
+                    name.ctx,
+                    ast::ExprContext::Load | ast::ExprContext::Del | ast::ExprContext::Invalid
+                ) =>
+            {
+                Self::for_load(model, goto_target, identity, lexical)
+            }
+            GotoTarget::Call {
+                callable: ast::ExprRef::Name(_),
+                ..
+            }
+            | GotoTarget::StringAnnotationSubexpr { .. } => {
+                Self::for_load(model, goto_target, identity, lexical)
+            }
+            _ => {
+                let Some(identity) = identity else {
+                    return Self::Lexical(lexical);
+                };
+                let (bindings, structural) = identity.binding_parts();
+                let Some(bindings) = bindings.filter(|bindings| !bindings.is_empty()) else {
+                    return Self::Lexical(lexical);
+                };
+                Self::Binding {
+                    bindings,
+                    structural,
+                    expand_structural: matches!(goto_target, GotoTarget::ImportExportedName { .. }),
+                    lexical,
+                }
+            }
+        }
+    }
+
+    fn for_load(
+        model: &SemanticModel<'db>,
+        goto_target: &GotoTarget<'_>,
+        identity: Option<OccurrenceIdentity<'db>>,
+        lexical: Definitions<'db>,
+    ) -> Self {
+        identity
+            .and_then(OccurrenceIdentity::complete_load_providers)
+            .filter(|providers| !providers.is_empty())
+            .map_or(Self::Lexical(lexical.clone()), |providers| Self::Load {
+                providers,
+                selected: ReferenceTarget::new(
+                    model.file(),
+                    goto_target.range(),
+                    ReferenceKind::Read,
+                ),
+                lexical,
+            })
+    }
+
+    fn matches(
+        &self,
+        candidate: &OccurrenceIdentity<'db>,
+        candidate_target: &ReferenceTarget,
+    ) -> bool {
+        match self {
+            Self::Binding {
+                bindings,
+                structural,
+                expand_structural,
+                lexical,
+            } => {
+                candidate.binding_intersects(bindings)
+                    || candidate.structural_intersects(bindings)
+                    || candidate.structural_intersects(structural)
+                    || (*expand_structural && candidate.binding_intersects(structural))
+                    || match &candidate.load {
+                        LoadIdentity::Providers(providers) => {
+                            providers.intersects(bindings)
+                                || (*expand_structural && providers.intersects(structural))
+                        }
+                        LoadIdentity::Unresolved => candidate.lexical.intersects(lexical),
+                        LoadIdentity::None => {
+                            candidate.binding.is_none()
+                                && candidate.structural.is_none()
+                                && candidate.lexical.intersects(lexical)
+                        }
+                    }
+            }
+            Self::Load {
+                providers,
+                selected,
+                ..
+            } => {
+                selected.file_range() == candidate_target.file_range()
+                    || candidate.binding_intersects(providers)
+                    || candidate.structural_intersects(providers)
+            }
+            Self::Lexical(target) => candidate.lexical.intersects(target),
+        }
+    }
+
+    fn definitions(&self) -> &Definitions<'db> {
+        match self {
+            Self::Binding { lexical, .. } | Self::Load { lexical, .. } | Self::Lexical(lexical) => {
+                lexical
+            }
+        }
+    }
+}
+
+fn value_provider_definitions<'db>(providers: &ValueProviders<'db>) -> Definitions<'db> {
+    Definitions::new(
+        providers
+            .definitions()
+            .map(ResolvedDefinition::Definition)
+            .collect(),
+    )
+}
+
+fn module_export_structural_family<'db>(
+    model: &SemanticModel<'db>,
+    lexical: &Definitions<'db>,
+    name: &str,
+) -> Option<Definitions<'db>> {
+    let definitions = lexical
+        .iter()
+        .filter_map(ResolvedDefinition::definition)
+        .filter_map(|definition| {
+            let module = ty_module_resolver::file_to_module(
+                model.db(),
+                definition
+                    .program_file(model.db())
+                    .resolver_file(model.db()),
+            )?;
+            let providers = model.module_global_providers(module, name)?;
+            Some(value_provider_definitions(&providers))
+        })
+        .fold(Definitions::new(Vec::new()), |family, providers| {
+            family.union(&providers)
+        });
+
+    (!definitions.is_empty()).then_some(definitions)
+}
+
 fn references_for_keyword_arguments_in_file(
     db: &dyn Db,
     file: ProgramFile<'_>,
-    target_definitions: &Definitions<'_>,
+    target: &ReferenceSearchTarget<'_>,
     target_text: &str,
     mode: ReferencesMode,
 ) -> Vec<ReferenceTarget> {
@@ -184,7 +361,7 @@ fn references_for_keyword_arguments_in_file(
     let mut finder = KeywordArgumentReferencesFinder(LocalReferencesFinder {
         model: &model,
         tokens: module.tokens(),
-        target_definitions,
+        target,
         references: &mut references,
         mode,
         target_text,
@@ -226,7 +403,7 @@ fn is_slots_assignment(node: AnyNodeRef<'_>, value: AnyNodeRef<'_>) -> bool {
 fn references_for_file(
     db: &dyn Db,
     file: ProgramFile<'_>,
-    target_definitions: &Definitions<'_>,
+    target: &ReferenceSearchTarget<'_>,
     target_text: &str,
     mode: ReferencesMode,
 ) -> Vec<ReferenceTarget> {
@@ -237,7 +414,7 @@ fn references_for_file(
 
     let mut finder = LocalReferencesFinder {
         model: &model,
-        target_definitions,
+        target,
         references: &mut references,
         mode,
         tokens: module.tokens(),
@@ -372,11 +549,276 @@ impl From<ast::ExprContext> for OccurrenceKind {
     }
 }
 
+#[derive(Debug)]
+enum LoadIdentity<'db> {
+    Providers(Definitions<'db>),
+    Unresolved,
+    None,
+}
+
+impl<'db> LoadIdentity<'db> {
+    fn providers(&self) -> Option<&Definitions<'db>> {
+        match self {
+            Self::Providers(providers) => Some(providers),
+            Self::Unresolved | Self::None => None,
+        }
+    }
+
+    fn has_import_provider(&self, db: &dyn ty_python_semantic::Db) -> bool {
+        self.providers().is_some_and(|providers| {
+            providers.iter().any(|provider| {
+                provider
+                    .definition()
+                    .is_some_and(|definition| definition.kind(db).is_import())
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+struct OccurrenceIdentity<'db> {
+    lexical: Definitions<'db>,
+    binding: Option<Definitions<'db>>,
+    load: LoadIdentity<'db>,
+    structural: Option<Definitions<'db>>,
+}
+
+impl<'db> OccurrenceIdentity<'db> {
+    fn from_goto_target(
+        model: &SemanticModel<'db>,
+        goto_target: &GotoTarget<'_>,
+        target_text: &str,
+    ) -> Option<Self> {
+        let lexical = goto_target
+            .definitions(
+                model,
+                ReferencesMode::References.to_import_alias_resolution(),
+            )?
+            .goto_declaration(model, goto_target)?;
+
+        if let GotoTarget::StringAnnotationSubexpr {
+            string_expr,
+            subrange,
+            levels,
+            ..
+        } = goto_target
+        {
+            if *levels == 2 {
+                return Some(Self::lexical(lexical));
+            }
+
+            let (sub_ast, sub_model) = model.enter_string_annotation(string_expr)?;
+            let covering = covering_node(sub_ast.syntax().into(), *subrange);
+            let sub_target = GotoTarget::from_covering_node(
+                &sub_model,
+                &covering,
+                subrange.start(),
+                sub_ast.tokens(),
+            )?;
+            return Some(Self::from_target_parts(
+                &sub_model,
+                &sub_target,
+                lexical,
+                target_text,
+            ));
+        }
+
+        let mut identity = Self::from_target_parts(model, goto_target, lexical, target_text);
+        let parsed = parsed_module(model.db(), model.python_file());
+        let module = parsed.load(model.db());
+        let covering = covering_node(module.syntax().into(), goto_target.range());
+        identity.apply_local_definition(model, &covering, target_text);
+        Some(identity)
+    }
+
+    fn from_covering_node(
+        model: &SemanticModel<'db>,
+        tokens: &Tokens,
+        covering_node: &CoveringNode<'_>,
+        mode: ReferencesMode,
+        target_text: &str,
+    ) -> Option<Self> {
+        let offset = covering_node.node().start();
+        let target = GotoTarget::from_covering_node(model, covering_node, offset, tokens)?;
+        let lexical = target
+            .definitions(model, mode.to_import_alias_resolution())?
+            .goto_declaration(model, &target)?;
+        let mut identity = Self::from_target_parts(model, &target, lexical, target_text);
+
+        identity.apply_local_definition(model, covering_node, target_text);
+
+        Some(identity)
+    }
+
+    fn from_target_parts(
+        model: &SemanticModel<'db>,
+        goto_target: &GotoTarget<'_>,
+        lexical: Definitions<'db>,
+        target_text: &str,
+    ) -> Self {
+        let name = match goto_target {
+            GotoTarget::Expression(ast::ExprRef::Name(name)) => Some(*name),
+            GotoTarget::Call {
+                callable: ast::ExprRef::Name(name),
+                ..
+            } => Some(*name),
+            _ => None,
+        };
+
+        let binding = match name.map(|name| name.ctx) {
+            Some(ast::ExprContext::Store) => Some(lexical.clone()),
+            Some(ast::ExprContext::Del) => None,
+            _ if matches!(
+                goto_target,
+                GotoTarget::FunctionDef(_)
+                    | GotoTarget::ClassDef(_)
+                    | GotoTarget::Parameter(_)
+                    | GotoTarget::ImportModuleAlias { .. }
+                    | GotoTarget::ImportExportedName { .. }
+                    | GotoTarget::ImportSymbolAlias { .. }
+                    | GotoTarget::ExceptVariable(_)
+                    | GotoTarget::PatternMatchRest(_)
+                    | GotoTarget::PatternMatchStarName(_)
+                    | GotoTarget::PatternMatchAsName(_)
+                    | GotoTarget::TypeParamTypeVarName(_)
+                    | GotoTarget::TypeParamParamSpecName(_)
+                    | GotoTarget::TypeParamTypeVarTupleName(_)
+            ) =>
+            {
+                Some(lexical.clone())
+            }
+            _ => None,
+        };
+
+        let load = name.map_or(LoadIdentity::None, |name| match name.ctx {
+            ast::ExprContext::Load | ast::ExprContext::Del | ast::ExprContext::Invalid => {
+                Self::load_identity(model, name)
+            }
+            ast::ExprContext::Store => LoadIdentity::None,
+        });
+
+        let structural = match goto_target {
+            GotoTarget::KeywordArgument { .. }
+            | GotoTarget::NonLocal { .. }
+            | GotoTarget::Globals { .. } => Some(lexical.clone()),
+            GotoTarget::ImportExportedName { .. } => {
+                module_export_structural_family(model, &lexical, target_text)
+            }
+            _ if load.has_import_provider(model.db()) => {
+                module_export_structural_family(model, &lexical, target_text)
+            }
+            _ => None,
+        };
+
+        Self {
+            lexical,
+            binding,
+            load,
+            structural,
+        }
+    }
+
+    fn load_identity(model: &SemanticModel<'db>, name: &ast::ExprName) -> LoadIdentity<'db> {
+        let Some(resolution) = model.name_load(name) else {
+            return LoadIdentity::Unresolved;
+        };
+        if resolution.providers().has_unrepresented_provider() {
+            return LoadIdentity::Unresolved;
+        }
+
+        let definitions = value_provider_definitions(resolution.providers());
+        if definitions.is_empty() {
+            LoadIdentity::Unresolved
+        } else {
+            LoadIdentity::Providers(definitions)
+        }
+    }
+
+    fn apply_local_definition(
+        &mut self,
+        model: &SemanticModel<'db>,
+        covering_node: &CoveringNode<'_>,
+        target_text: &str,
+    ) {
+        let Some(definition) = model.first_local_definition(covering_node) else {
+            return;
+        };
+
+        if self.binding.is_some()
+            && !matches!(definition.kind(model.db()), DefinitionKind::Function(_))
+        {
+            self.binding = Some(Definitions::new(vec![ResolvedDefinition::Definition(
+                definition,
+            )]));
+        }
+
+        if self.binding.is_some()
+            && definition.scope(model.db()).scope(model.db()).kind() == ScopeKind::Module
+            && let Some(structural) =
+                module_export_structural_family(model, &self.lexical, target_text)
+            && self
+                .binding
+                .as_ref()
+                .is_some_and(|binding| binding.intersects(&structural))
+        {
+            self.structural = Some(structural);
+        }
+
+        if matches!(
+            definition.kind(model.db()),
+            DefinitionKind::AugmentedAssignment(_)
+        ) && let Some(name) = covering_node.node().expr_name()
+        {
+            self.load = Self::load_identity(model, name);
+        }
+    }
+
+    fn lexical(lexical: Definitions<'db>) -> Self {
+        Self {
+            lexical,
+            binding: None,
+            load: LoadIdentity::Unresolved,
+            structural: None,
+        }
+    }
+
+    fn complete_load_providers(self) -> Option<Definitions<'db>> {
+        match self.load {
+            LoadIdentity::Providers(providers) => Some(match self.structural {
+                Some(structural) => providers.union(&structural),
+                None => providers,
+            }),
+            LoadIdentity::Unresolved | LoadIdentity::None => None,
+        }
+    }
+
+    fn binding_parts(self) -> (Option<Definitions<'db>>, Definitions<'db>) {
+        match (self.binding, self.structural) {
+            (Some(binding), Some(structural)) => (Some(binding), structural),
+            (Some(binding), None) => (Some(binding), Definitions::new(Vec::new())),
+            (None, Some(structural)) => (Some(structural), Definitions::new(Vec::new())),
+            (None, None) => (None, Definitions::new(Vec::new())),
+        }
+    }
+
+    fn binding_intersects(&self, target: &Definitions<'db>) -> bool {
+        self.binding
+            .as_ref()
+            .is_some_and(|binding| binding.intersects(target))
+    }
+
+    fn structural_intersects(&self, target: &Definitions<'db>) -> bool {
+        self.structural
+            .as_ref()
+            .is_some_and(|structural| structural.intersects(target))
+    }
+}
+
 /// AST visitor to find all references to a specific symbol by comparing semantic definitions
 struct LocalReferencesFinder<'a> {
     model: &'a SemanticModel<'a>,
     tokens: &'a Tokens,
-    target_definitions: &'a Definitions<'a>,
+    target: &'a ReferenceSearchTarget<'a>,
     references: &'a mut Vec<ReferenceTarget>,
     mode: ReferencesMode,
     target_text: &'a str,
@@ -466,7 +908,7 @@ impl<'a> SourceOrderVisitor<'a> for LocalReferencesFinder<'a> {
                 {
                     let mut sub_finder = LocalReferencesFinder {
                         model: &sub_model,
-                        target_definitions: self.target_definitions,
+                        target: self.target,
                         references: self.references,
                         mode: self.mode,
                         tokens: sub_ast.tokens(),
@@ -549,35 +991,51 @@ impl<'a> LocalReferencesFinder<'a> {
         self.check_covering_node(&covering_node, kind);
     }
 
-    /// Returns the covering node's resolved definitions.
     fn definitions_for_covering_node(
         &self,
         covering_node: &CoveringNode<'_>,
     ) -> Option<Definitions<'a>> {
-        // Use the start of the covering node as the offset. Any offset within
-        // the node is fine here. Offsets matter only for import statements
-        // where the identifier might be a multi-part module name.
         let offset = covering_node.node().start();
         let goto_target =
             GotoTarget::from_covering_node(self.model, covering_node, offset, self.tokens)?;
 
-        let definitions = goto_target
+        goto_target
             .definitions(self.model, self.mode.to_import_alias_resolution())?
-            .goto_declaration(self.model, &goto_target)?;
-
-        Some(definitions)
+            .goto_declaration(self.model, &goto_target)
     }
 
     fn check_covering_node(&mut self, covering_node: &CoveringNode<'_>, kind: OccurrenceKind) {
-        let Some(current_definitions) = self.definitions_for_covering_node(covering_node) else {
-            return;
-        };
-
-        // Check if any of the current definitions match our target definitions
-        if !self.target_definitions.intersects(&current_definitions) {
+        if let ReferenceSearchTarget::Lexical(target) = self.target {
+            if self
+                .definitions_for_covering_node(covering_node)
+                .is_some_and(|definitions| target.intersects(&definitions))
+            {
+                self.push_reference(covering_node, kind);
+            }
             return;
         }
 
+        let Some(identity) = OccurrenceIdentity::from_covering_node(
+            self.model,
+            self.tokens,
+            covering_node,
+            self.mode,
+            self.target_text,
+        ) else {
+            return;
+        };
+
+        let target = ReferenceTarget::new(
+            self.model.file(),
+            covering_node.node().range(),
+            kind.to_reference_kind(),
+        );
+        if self.target.matches(&identity, &target) {
+            self.push_reference(covering_node, kind);
+        }
+    }
+
+    fn push_reference(&mut self, covering_node: &CoveringNode<'_>, kind: OccurrenceKind) {
         if matches!(self.mode, ReferencesMode::ReferencesSkipDeclaration) {
             let is_declaration = match kind {
                 OccurrenceKind::Declaration => true,
@@ -590,12 +1048,11 @@ impl<'a> LocalReferencesFinder<'a> {
             }
         }
 
-        let target = ReferenceTarget::new(
+        self.references.push(ReferenceTarget::new(
             self.model.file(),
             covering_node.node().range(),
             kind.to_reference_kind(),
-        );
-        self.references.push(target);
+        ));
     }
 
     /// Checks a string literal that may be an entry in a class's `__slots__`.
@@ -720,7 +1177,7 @@ impl<'a> LocalReferencesFinder<'a> {
             scope = node.parent()?;
         };
 
-        self.target_definitions.iter().any(|resolved| {
+        self.target.definitions().iter().any(|resolved| {
             let Some(definition) = resolved.definition() else {
                 return false;
             };
