@@ -1771,7 +1771,6 @@ impl<'db> StaticClassLiteral<'db> {
                 .own_instance_member(db, env, name)
                 .ignore_possibly_undefined()
                 .map(|ty| ty.apply_optional_specialization(db, specialization))
-                .or_else(|| self.inherited_slot_value_type(db, env, specialization, name))
                 .unwrap_or_else(Type::unknown),
         };
         let descriptor_class = if matches!(name, "__dict__" | "__weakref__") {
@@ -1819,48 +1818,6 @@ impl<'db> StaticClassLiteral<'db> {
             setter,
             deleter,
         ))
-    }
-
-    /// Returns an inherited declaration for storage introduced by this class.
-    ///
-    /// A base can declare `value: int` while using `__slots__ = ()`; a subclass can then provide
-    /// the actual `value` slot. Normal instance-member lookup excludes the base annotation because
-    /// that base has no storage, but the subclass's slot must still enforce its declared contract.
-    fn inherited_slot_value_type(
-        self,
-        db: &'db dyn Db,
-        env: &ProgramEnvironment<'db>,
-        specialization: Option<Specialization<'db>>,
-        name: &str,
-    ) -> Option<Type<'db>> {
-        self.iter_mro(db, specialization)
-            .skip(1)
-            .filter_map(ClassBase::into_class)
-            .filter_map(|class| class.static_class_literal(db))
-            .find_map(|(class, specialization)| {
-                let body_scope = class.body_scope(db);
-                let symbol = place_table(db, body_scope).symbol_id(name)?;
-                let declarations =
-                    use_def_map(db, body_scope).end_of_scope_symbol_declarations(symbol);
-                let declaration = place_from_declarations(db, env, declarations)
-                    .ignore_conflicting_declarations();
-
-                if declaration.qualifiers.contains(TypeQualifiers::CLASS_VAR)
-                    || declaration.qualifiers.contains(TypeQualifiers::INIT_VAR)
-                {
-                    return None;
-                }
-
-                let ty = declaration.place.ignore_possibly_undefined()?;
-                if ty.is_instance_of(db, KnownClass::KwOnly)
-                    && CodeGeneratorKind::from_static_class(db, class)
-                        .is_some_and(CodeGeneratorKind::is_dataclass_like)
-                {
-                    return None;
-                }
-
-                Some(ty.apply_optional_specialization(db, specialization))
-            })
     }
 
     /// Returns the inferred type of the class member named `name`. Only bound members
@@ -3284,7 +3241,11 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> PlaceAndQualifiers<'db> {
-        if self.is_typed_dict(db) {
+        if self.is_typed_dict(db)
+            || self.slot_names(db).is_some()
+                && !self.has_instance_slot(db, name)
+                && !self.has_instance_dictionary(db)
+        {
             return Place::Undefined.into();
         }
 
@@ -3743,13 +3704,6 @@ impl<'db> StaticClassLiteral<'db> {
 
         let body_scope = self.body_scope(db);
         let table = place_table(db, body_scope);
-
-        if self.slot_names(db).is_some()
-            && !self.has_instance_slot(db, name)
-            && !self.has_instance_dictionary(db)
-        {
-            return Member::unbound();
-        }
 
         if let Some(symbol_id) = table.symbol_id(name) {
             let use_def = use_def_map(db, body_scope);

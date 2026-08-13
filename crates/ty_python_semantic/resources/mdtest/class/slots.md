@@ -359,6 +359,8 @@ class Contract:
 class Implementation(Contract):
     __slots__ = ("value",)
 
+Contract().value = 1  # error: [unresolved-attribute]
+
 item = Implementation()
 reveal_type(item.value)  # revealed: int
 item.value = 1
