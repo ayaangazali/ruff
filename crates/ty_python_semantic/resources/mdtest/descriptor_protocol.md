@@ -890,6 +890,26 @@ c.name = None
 c.name = 42
 ```
 
+### Attributes of built-in properties
+
+A property stores its documentation in a writable built-in descriptor even though property instances
+do not have an instance dictionary.
+
+```py
+class Example:
+    @property
+    def value(self) -> int:
+        return 1
+
+    value.__doc__ = "Updated documentation"
+
+descriptor = property(lambda instance: 1)
+descriptor.__doc__ = "Updated documentation"
+descriptor.__doc__ = None
+descriptor.__doc__ = 1  # error: [invalid-assignment]
+descriptor.extra = 1  # error: [unresolved-attribute]
+```
+
 ### Overriding properties in subclasses
 
 When a subclass overrides a property, accessing other inherited properties from within the

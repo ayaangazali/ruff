@@ -385,6 +385,8 @@ fn instance_attribute_write_member_requirement<'db>(
                 qualifiers,
             );
 
+            // Built-in classes can expose writable C-level descriptors that their stubs model as
+            // plain annotations. Only a known slot layout rules out that additional storage.
             if matches!(
                 member,
                 ExplicitAttributeWriteRequirement::AssignableTo { .. }
@@ -392,6 +394,7 @@ fn instance_attribute_write_member_requirement<'db>(
                 && let Some((class, _)) = object_ty
                     .nominal_class(db, env)
                     .and_then(|class| class.static_class_literal(db))
+                && class.slot_names(db).is_some()
                 && !class.has_instance_dictionary(db)
                 && object_ty
                     .instance_member(db, env, attribute)
