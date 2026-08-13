@@ -582,6 +582,7 @@ class SlottedDataclass:
     value: int
 
 SlottedDataclass(1).extra = 1  # error: [unresolved-attribute]
+SlottedDataclass(1).__dict__  # error: [unresolved-attribute]
 ```
 
 Its subclasses inherit that restricted instance layout unless they introduce a dictionary.
@@ -780,25 +781,51 @@ class CustomSetter:
 CustomSetter().shared = 1
 ```
 
-## Instance dictionary access follows the object annotation
+## Instance dictionaries require dictionary storage
 
-The `object` stub declares `__dict__` for all instances, so access remains permitted even when a
-slotted instance does not have a dictionary at runtime.
+A slotted instance without dictionary storage does not expose `__dict__`, even though the attribute
+is declared on `object`. The class itself still has its own namespace.
 
 ```py
 class Slotted:
     __slots__ = ("value",)
 
-reveal_type(Slotted().__dict__)  # revealed: dict[str, Any]
+Slotted().__dict__  # error: [unresolved-attribute]
+reveal_type(Slotted.__dict__)  # revealed: dict[str, Any]
 ```
 
-An explicit dictionary slot uses the same inherited annotation.
+An explicit dictionary slot restores access to the instance dictionary.
 
 ```py
 class WithDictionary:
     __slots__ = ("value", "__dict__")
 
 reveal_type(WithDictionary().__dict__)  # revealed: dict[str, Any]
+```
+
+An ordinary base class can also provide inherited dictionary storage.
+
+```py
+class OrdinaryBase:
+    pass
+
+class InheritedDictionary(OrdinaryBase):
+    __slots__ = ("value",)
+
+reveal_type(InheritedDictionary().__dict__)  # revealed: dict[str, Any]
+```
+
+A custom attribute getter can provide a virtual `__dict__` without creating dictionary storage.
+
+```py
+class VirtualDictionary:
+    __slots__ = ()
+
+    def __getattr__(self, name: str) -> int:
+        return 1
+
+reveal_type(VirtualDictionary().__dict__)  # revealed: int
+VirtualDictionary().extra = 1  # error: [unresolved-attribute]
 ```
 
 ## Weak-reference slots create read-only descriptors

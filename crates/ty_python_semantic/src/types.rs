@@ -912,6 +912,42 @@ struct MemberLookupKey<'db> {
     policy: MemberLookupPolicy,
 }
 
+impl<'db> MemberLookupKey<'db> {
+    /// Excludes inherited instance attributes that require storage the receiver does not have.
+    ///
+    /// Typeshed declares `object.__dict__` for every object, but a slotted instance without
+    /// dictionary storage cannot expose that inherited attribute:
+    ///
+    /// ```python
+    /// class Example:
+    ///     __slots__ = ()
+    ///
+    /// Example().__dict__  # Raises AttributeError.
+    /// ```
+    ///
+    /// Skipping only `object` preserves class-defined `__dict__` descriptors and allows normal
+    /// `__getattr__` fallback.
+    fn with_instance_storage_policy(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>) -> Self {
+        let ty = self.ty(db);
+        if self.name(db) == "__dict__"
+            && let Some((class, _)) = ty
+                .nominal_class(db, env)
+                .and_then(|class| class.static_class_literal(db))
+            && class.lacks_instance_storage(db, "__dict__")
+        {
+            Self::new(
+                db,
+                self.program(db),
+                ty,
+                self.name(db).as_str(),
+                self.policy(db) | MemberLookupPolicy::MRO_NO_OBJECT_FALLBACK,
+            )
+        } else {
+            self
+        }
+    }
+}
+
 /// Meta data for `Type::Todo`, which represents a known limitation in ty.
 #[cfg(debug_assertions)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, get_size2::GetSize)]
@@ -3346,6 +3382,7 @@ impl<'db> Type<'db> {
         env: &ProgramEnvironment<'db>,
         key: MemberLookupKey<'db>,
     ) -> PlaceAndQualifiers<'db> {
+        let key = key.with_instance_storage_policy(db, env);
         let ty = key.ty(db);
 
         if let Type::TypeVar(_) = ty {
