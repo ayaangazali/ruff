@@ -2704,6 +2704,7 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                     value_ty,
                 )
             }
+            ExplicitAttributeWriteRequirement::ReadOnly { .. } => self.never(),
             ExplicitAttributeWriteRequirement::AssignableTo { ty, .. } => {
                 self.check_type_pair(db, value_ty, *ty)
             }

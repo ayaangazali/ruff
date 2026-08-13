@@ -1014,12 +1014,7 @@ struct DisplayRepresentation<'env, 'db> {
 }
 
 fn descriptor_display_name(db: &dyn Db, descriptor: PropertyInstanceType<'_>) -> &'static str {
-    descriptor_class_display_name(descriptor.instance_class(db))
-}
-
-/// Format a descriptor class using the spelling expected in diagnostics.
-pub(super) fn descriptor_class_display_name(class: KnownClass) -> &'static str {
-    match class {
+    match descriptor.instance_class(db) {
         KnownClass::EnumProperty => "enum.property",
         KnownClass::MemberDescriptorType => "MemberDescriptorType",
         KnownClass::GetSetDescriptorType => "GetSetDescriptorType",
@@ -1404,14 +1399,14 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     WrapperDescriptorKind::FunctionTypeDunderGet => {
                         ("__get__", "function", KnownClass::FunctionType)
                     }
-                    WrapperDescriptorKind::PropertyDunderGet(class) => {
-                        ("__get__", descriptor_class_display_name(class), class)
+                    WrapperDescriptorKind::PropertyDunderGet => {
+                        ("__get__", "property", KnownClass::Property)
                     }
-                    WrapperDescriptorKind::PropertyDunderSet(class) => {
-                        ("__set__", descriptor_class_display_name(class), class)
+                    WrapperDescriptorKind::PropertyDunderSet => {
+                        ("__set__", "property", KnownClass::Property)
                     }
-                    WrapperDescriptorKind::PropertyDunderDelete(class) => {
-                        ("__delete__", descriptor_class_display_name(class), class)
+                    WrapperDescriptorKind::PropertyDunderDelete => {
+                        ("__delete__", "property", KnownClass::Property)
                     }
                 };
                 f.write_char('<')?;

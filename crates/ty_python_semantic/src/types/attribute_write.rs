@@ -137,6 +137,8 @@ pub(super) enum ExplicitAttributeWriteRequirement<'db> {
         setter_ty: Type<'db>,
         qualifiers: TypeQualifiers,
     },
+    /// The resolved member exists but does not allow assignment.
+    ReadOnly { qualifiers: TypeQualifiers },
     /// Check the assigned value directly against the member's effective write type.
     AssignableTo {
         ty: Type<'db>,
@@ -147,9 +149,9 @@ pub(super) enum ExplicitAttributeWriteRequirement<'db> {
 impl ExplicitAttributeWriteRequirement<'_> {
     pub(super) fn qualifiers(&self) -> TypeQualifiers {
         match self {
-            Self::Descriptor { qualifiers, .. } | Self::AssignableTo { qualifiers, .. } => {
-                *qualifiers
-            }
+            Self::Descriptor { qualifiers, .. }
+            | Self::ReadOnly { qualifiers }
+            | Self::AssignableTo { qualifiers, .. } => *qualifiers,
         }
     }
 }
@@ -577,6 +579,12 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
+    if attr_ty.as_descriptor_instance().is_some_and(|descriptor| {
+        descriptor.is_slot_descriptor(db) && descriptor.setter(db).is_none()
+    }) {
+        return ExplicitAttributeWriteRequirement::ReadOnly { qualifiers };
+    }
+
     if let Some(PlaceAndQualifiers {
         place: Place::Defined(DefinedPlace { ty, .. }),
         qualifiers: storage_qualifiers,

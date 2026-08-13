@@ -760,12 +760,12 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
 pub enum WrapperDescriptorKind {
     /// `FunctionType.__get__`
     FunctionTypeDunderGet,
-    /// `property.__get__` or the equivalent special method of a runtime slot descriptor.
-    PropertyDunderGet(KnownClass),
-    /// `property.__set__` or the equivalent special method of a runtime slot descriptor.
-    PropertyDunderSet(KnownClass),
-    /// `property.__delete__` or the equivalent special method of a runtime slot descriptor.
-    PropertyDunderDelete(KnownClass),
+    /// `property.__get__`
+    PropertyDunderGet,
+    /// `property.__set__`
+    PropertyDunderSet,
+    /// `property.__delete__`
+    PropertyDunderDelete,
 }
 
 impl WrapperDescriptorKind {
@@ -826,15 +826,15 @@ impl WrapperDescriptorKind {
             WrapperDescriptorKind::FunctionTypeDunderGet => {
                 Either::Left(dunder_get_signatures(db, env, KnownClass::FunctionType).into_iter())
             }
-            WrapperDescriptorKind::PropertyDunderGet(class) => {
-                Either::Left(dunder_get_signatures(db, env, class).into_iter())
+            WrapperDescriptorKind::PropertyDunderGet => {
+                Either::Left(dunder_get_signatures(db, env, KnownClass::Property).into_iter())
             }
-            WrapperDescriptorKind::PropertyDunderSet(class) => {
+            WrapperDescriptorKind::PropertyDunderSet => {
                 let object = Type::object();
                 Either::Right(std::iter::once(Signature::new(
                     Parameters::standard([
                         Parameter::positional_only(Some(Name::new_static("self")))
-                            .with_annotated_type(class.to_instance(db, env)),
+                            .with_annotated_type(KnownClass::Property.to_instance(db, env)),
                         Parameter::positional_only(Some(Name::new_static("instance")))
                             .with_annotated_type(object),
                         Parameter::positional_only(Some(Name::new_static("value")))
@@ -843,11 +843,11 @@ impl WrapperDescriptorKind {
                     Type::unknown(),
                 )))
             }
-            WrapperDescriptorKind::PropertyDunderDelete(class) => {
+            WrapperDescriptorKind::PropertyDunderDelete => {
                 Either::Right(std::iter::once(Signature::new(
                     Parameters::standard([
                         Parameter::positional_only(Some(Name::new_static("self")))
-                            .with_annotated_type(class.to_instance(db, env)),
+                            .with_annotated_type(KnownClass::Property.to_instance(db, env)),
                         Parameter::positional_only(Some(Name::new_static("instance")))
                             .with_annotated_type(Type::object()),
                     ]),
