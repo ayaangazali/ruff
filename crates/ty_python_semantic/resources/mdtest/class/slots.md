@@ -375,8 +375,8 @@ reveal_type(IndirectSlots().value)  # revealed: Unknown
 
 ## Mutated slot declarations
 
-A mutable `__slots__` value can change before the class is created. If the class body uses that
-value after assigning it, its contents cannot be assumed to remain unchanged.
+Slot names are taken from the original literal. Later changes to that literal are not evaluated, so
+an appended name is not treated as an available slot.
 
 ```py
 class MutatedSlots:
@@ -384,9 +384,8 @@ class MutatedSlots:
     __slots__.append("extra")
 
     def __init__(self) -> None:
-        self.extra = 1
-
-reveal_type(MutatedSlots().extra)  # revealed: int
+        self.value = 1
+        self.extra = 2  # error: [unresolved-attribute]
 ```
 
 ## Dynamic slot declarations
@@ -581,7 +580,7 @@ from dataclasses import dataclass
 class SlottedDataclass:
     value: int
 
-SlottedDataclass(1).__dict__  # error: [unresolved-attribute]
+SlottedDataclass(1).extra = 1  # error: [unresolved-attribute]
 ```
 
 Its subclasses inherit that restricted instance layout unless they introduce a dictionary.
@@ -592,8 +591,6 @@ class SlottedChild(SlottedDataclass):
 
     def initialize(self) -> None:
         self.extra = 1  # error: [unresolved-attribute]
-
-SlottedChild(1).__dict__  # error: [unresolved-attribute]
 ```
 
 ## Dataclass-generated slots exclude inherited slots
@@ -697,7 +694,6 @@ def model(*, slots: bool = False) -> Callable[[T], T]:
 class SlottedModel:
     value: int
 
-SlottedModel(1).__dict__  # error: [unresolved-attribute]
 SlottedModel(1).other = 1  # error: [unresolved-attribute]
 ```
 
@@ -711,8 +707,6 @@ class SlottedString(str):
 
     def initialize(self) -> None:
         self.extra = 1  # error: [unresolved-attribute]
-
-SlottedString("value").__dict__  # error: [unresolved-attribute]
 ```
 
 ## Built-in bases with instance dictionaries
@@ -785,24 +779,25 @@ class CustomSetter:
 CustomSetter().shared = 1
 ```
 
-## Instance dictionaries require a dictionary slot
+## Instance dictionary access follows the object annotation
 
-A slotted instance does not have an instance dictionary unless its slots include `__dict__`.
+The `object` stub declares `__dict__` for all instances, so access remains permitted even when a
+slotted instance does not have a dictionary at runtime.
 
 ```py
 class Slotted:
     __slots__ = ("value",)
 
-Slotted().__dict__  # error: [unresolved-attribute]
+reveal_type(Slotted().__dict__)  # revealed: dict[str, Any]
 ```
 
-Declaring a `__dict__` slot makes the instance dictionary available.
+An explicit dictionary slot uses the same inherited annotation.
 
 ```py
 class WithDictionary:
     __slots__ = ("value", "__dict__")
 
-WithDictionary().__dict__
+reveal_type(WithDictionary().__dict__)  # revealed: dict[str, Any]
 ```
 
 ## Weak-reference slots create read-only descriptors

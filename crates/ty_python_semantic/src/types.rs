@@ -814,13 +814,6 @@ enum InstanceFallbackShadowsNonDataDescriptor {
     No,
 }
 
-/// Distinguishes a class namespace from an instance dictionary during `__dict__` lookup.
-#[derive(Clone, Debug, Copy, PartialEq)]
-enum DictionaryReceiver<'db> {
-    Class(PlaceAndQualifiers<'db>),
-    Instance,
-}
-
 bitflags! {
     #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
     pub(crate) struct MemberLookupPolicy: u8 {
@@ -3411,59 +3404,6 @@ impl<'db> Type<'db> {
         Self::class_member_with_policy_inner(db, key)
     }
 
-    /// Corrects `__dict__` lookup for the receiver's actual class or instance layout.
-    ///
-    /// A class always exposes its own namespace, even when an instance slot is also named
-    /// `__dict__`. An instance only exposes ordinary dictionary storage when its layout provides
-    /// it; an explicitly declared class attribute can still supply a virtual dictionary.
-    fn dictionary_member_override(
-        self,
-        db: &'db dyn Db,
-        env: &ProgramEnvironment<'db>,
-        name: &str,
-        policy: MemberLookupPolicy,
-        receiver: DictionaryReceiver<'db>,
-    ) -> Option<PlaceAndQualifiers<'db>> {
-        if name != "__dict__" {
-            return None;
-        }
-
-        match receiver {
-            DictionaryReceiver::Class(member) => {
-                let descriptor = member
-                    .place
-                    .ignore_possibly_undefined()
-                    .and_then(Type::as_descriptor_instance)?;
-                if !descriptor.is_slot_descriptor(db) {
-                    return None;
-                }
-
-                // `type.__dict__` is a data descriptor at runtime, but typeshed represents it as
-                // a plain annotation. Preserve the class namespace over an instance-dictionary slot.
-                KnownClass::Object
-                    .to_class_literal(db, env)
-                    .find_name_in_mro_with_policy(db, env, name, policy)
-            }
-            DictionaryReceiver::Instance => {
-                let (class, _) = self
-                    .nominal_class(db, env)
-                    .and_then(|class| class.static_class_literal(db))?;
-                (class.slot_names(db).is_some()
-                    && !class.has_instance_dictionary(db)
-                    && self
-                        .class_member_with_policy(
-                            db,
-                            env,
-                            name,
-                            MemberLookupPolicy::MRO_NO_OBJECT_FALLBACK,
-                        )
-                        .place
-                        .is_undefined())
-                .then_some(Place::Undefined.into())
-            }
-        }
-    }
-
     /// Look up attributes stored in the namespace of a class object.
     ///
     /// Besides attributes present in the class MRO, this includes attributes assigned to
@@ -3482,16 +3422,6 @@ impl<'db> Type<'db> {
                 "Calling `class_object_member` on class literals and subclass-of types \
                 should always find an MRO",
             );
-        let class_attr = self
-            .dictionary_member_override(
-                db,
-                env,
-                name,
-                policy,
-                DictionaryReceiver::Class(class_attr),
-            )
-            .unwrap_or(class_attr);
-
         let own_class = match self {
             Type::SubclassOf(subclass_of) => match subclass_of.subclass_of() {
                 SubclassOfInner::Protocol(protocol) => {
@@ -4772,16 +4702,6 @@ impl<'db> Type<'db> {
                     fallback.into(),
                     InstanceFallbackShadowsNonDataDescriptor::No,
                 );
-                let result = this
-                    .dictionary_member_override(
-                        db,
-                        env,
-                        name_str,
-                        key.policy(db),
-                        DictionaryReceiver::Instance,
-                    )
-                    .map_or(result, Into::into);
-
                 if result
                     .unwrap_or_else(|error| error.fallback_member(db))
                     .is_class_var()

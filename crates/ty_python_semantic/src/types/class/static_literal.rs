@@ -426,14 +426,6 @@ impl<'db> StaticClassLiteral<'db> {
             return SlotDefinition::Dynamic;
         };
 
-        if semantic_index(db, body_scope.program_file(db))
-            .constraining_collection_uses(definition)
-            .next()
-            .is_some()
-        {
-            return SlotDefinition::Dynamic;
-        }
-
         let parsed = parsed_module(db, self.python_file(db)).load(db);
         let Some(value) = definition.kind(db).value(&parsed) else {
             return SlotDefinition::Dynamic;
@@ -1718,8 +1710,8 @@ impl<'db> StaticClassLiteral<'db> {
     ///     __slots__ = ("value", "__weakref__")
     /// ```
     ///
-    /// Ordinary slots use writable `MemberDescriptorType` descriptors. The special dictionary and
-    /// weak-reference slots use `GetSetDescriptorType`, and the weak-reference slot is read-only.
+    /// Ordinary slots use writable `MemberDescriptorType` descriptors. The weak-reference slot
+    /// uses a read-only `GetSetDescriptorType` descriptor.
     fn own_slot_descriptor(
         self,
         db: &'db dyn Db,
@@ -1727,22 +1719,16 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> Type<'db> {
-        let value_ty = match name {
-            "__dict__" => KnownClass::Dict.to_specialized_instance(
-                db,
-                env,
-                &[KnownClass::Str.to_instance(db, env), Type::any()],
-            ),
-            "__weakref__" => {
-                UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env))
-            }
-            _ => self
-                .own_instance_member(db, env, name)
+        let weak_reference_slot = name == "__weakref__";
+        let value_ty = if weak_reference_slot {
+            UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env))
+        } else {
+            self.own_instance_member(db, env, name)
                 .ignore_possibly_undefined()
                 .map(|ty| ty.apply_optional_specialization(db, specialization))
-                .unwrap_or_else(Type::unknown),
+                .unwrap_or_else(Type::unknown)
         };
-        let descriptor_class = if matches!(name, "__dict__" | "__weakref__") {
+        let descriptor_class = if weak_reference_slot {
             KnownClass::GetSetDescriptorType
         } else {
             KnownClass::MemberDescriptorType
@@ -1755,7 +1741,7 @@ impl<'db> StaticClassLiteral<'db> {
                 value_ty,
             ),
         );
-        let setter = (name != "__weakref__").then(|| {
+        let setter = (!weak_reference_slot).then(|| {
             Type::single_callable(
                 db,
                 Signature::new(
@@ -1768,7 +1754,7 @@ impl<'db> StaticClassLiteral<'db> {
                 ),
             )
         });
-        let deleter = (name != "__weakref__").then(|| {
+        let deleter = (!weak_reference_slot).then(|| {
             Type::single_callable(
                 db,
                 Signature::new(
@@ -1907,9 +1893,12 @@ impl<'db> StaticClassLiteral<'db> {
             }
         });
 
-        if self
-            .slot_names(db)
-            .is_some_and(|slots| slots.iter().any(|slot| slot == name))
+        // The inherited `object.__dict__` annotation already describes dictionary access. A
+        // synthesized slot descriptor would incorrectly replace the class's own namespace.
+        if name != "__dict__"
+            && self
+                .slot_names(db)
+                .is_some_and(|slots| slots.iter().any(|slot| slot == name))
         {
             let generated_slots = self.has_generated_slots(db);
             let has_runtime_class_binding = place_table(db, body_scope)
