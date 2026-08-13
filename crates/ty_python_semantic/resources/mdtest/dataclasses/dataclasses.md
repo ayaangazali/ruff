@@ -1769,8 +1769,8 @@ from dataclasses import dataclass
 class C:
     x: int
 
-reveal_type(C.__weakref__)  # revealed: GetSetDescriptorType
-reveal_type(C(1).__weakref__)  # revealed: Any | None
+reveal_type(C.__weakref__)  # revealed: Any
+reveal_type(C(1).__weakref__)  # revealed: Any
 reveal_type(C.__slots__)  # revealed: tuple[Literal["x"], Literal["__weakref__"]]
 ```
 

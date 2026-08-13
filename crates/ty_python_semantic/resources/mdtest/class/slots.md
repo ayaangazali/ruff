@@ -326,32 +326,6 @@ class DictionarySlots:
 reveal_type(DictionarySlots().value)  # revealed: Unknown
 ```
 
-## Mutable slots and unrelated class-body references
-
-A nested class can declare its own slots without changing the slots of its enclosing class.
-
-```py
-class Outer:
-    __slots__ = ["value"]
-
-    class Inner:
-        __slots__ = ()
-
-reveal_type(Outer.value)  # revealed: MemberDescriptorType
-Outer().value = 1
-```
-
-Reading a slots list without changing it also leaves its declared names intact.
-
-```py
-class ReadOnly:
-    __slots__ = ["value"]
-    count = len(__slots__)
-
-reveal_type(ReadOnly.value)  # revealed: MemberDescriptorType
-ReadOnly().value = 1
-```
-
 ## Annotated and indirect slot declarations
 
 An annotation on `__slots__` does not hide its runtime value.
@@ -582,7 +556,6 @@ class SlottedDataclass:
     value: int
 
 SlottedDataclass(1).extra = 1  # error: [unresolved-attribute]
-SlottedDataclass(1).__dict__  # error: [unresolved-attribute]
 ```
 
 Its subclasses inherit that restricted instance layout unless they introduce a dictionary.
@@ -781,54 +754,40 @@ class CustomSetter:
 CustomSetter().shared = 1
 ```
 
-## Instance dictionaries require dictionary storage
+## Instance dictionaries and inherited annotations
 
-A slotted instance without dictionary storage does not expose `__dict__`, even though the attribute
-is declared on `object`. The class itself still has its own namespace.
+Typeshed declares `__dict__` on `object`, so the attribute remains available through ordinary
+attribute lookup even when a slotted instance has no dictionary at runtime.
 
 ```py
 class Slotted:
     __slots__ = ("value",)
 
-Slotted().__dict__  # error: [unresolved-attribute]
+reveal_type(Slotted().__dict__)  # revealed: dict[str, Any]
 reveal_type(Slotted.__dict__)  # revealed: dict[str, Any]
 ```
 
-An explicit dictionary slot restores access to the instance dictionary.
+An unslotted subclass can introduce an instance dictionary, so methods on a slotted base may access
+the dictionary after checking whether it exists.
 
 ```py
-class WithDictionary:
-    __slots__ = ("value", "__dict__")
+from typing import Any
 
-reveal_type(WithDictionary().__dict__)  # revealed: dict[str, Any]
-```
-
-An ordinary base class can also provide inherited dictionary storage.
-
-```py
-class OrdinaryBase:
-    pass
-
-class InheritedDictionary(OrdinaryBase):
-    __slots__ = ("value",)
-
-reveal_type(InheritedDictionary().__dict__)  # revealed: dict[str, Any]
-```
-
-A custom attribute getter can provide a virtual `__dict__` without creating dictionary storage.
-
-```py
-class VirtualDictionary:
+class SlottedBase:
     __slots__ = ()
 
-    def __getattr__(self, name: str) -> int:
-        return 1
+    def attributes(self) -> dict[str, Any]:
+        if hasattr(self, "__dict__"):
+            return self.__dict__
+        return {}
 
-reveal_type(VirtualDictionary().__dict__)  # revealed: int
-VirtualDictionary().extra = 1  # error: [unresolved-attribute]
+class OrdinaryChild(SlottedBase):
+    pass
+
+reveal_type(OrdinaryChild().__dict__)  # revealed: dict[str, Any]
 ```
 
-## Weak-reference slots create read-only descriptors
+## Weak-reference slots create descriptors
 
 A slotted instance does not expose `__weakref__` unless the slot is explicitly declared.
 
@@ -839,22 +798,23 @@ class Slotted:
 Slotted().__weakref__  # error: [unresolved-attribute]
 ```
 
-An explicit `__weakref__` slot creates a `GetSetDescriptorType` on the class and permits reads on
-its instances.
+An explicit `__weakref__` slot permits reads on the class and its instances. The typeshed descriptor
+returns `Any` for both forms of access.
 
 ```py
 class WithWeakReference:
     __slots__ = ("value", "__weakref__")
 
-reveal_type(WithWeakReference.__weakref__)  # revealed: GetSetDescriptorType
-WithWeakReference().__weakref__
+reveal_type(WithWeakReference.__weakref__)  # revealed: Any
+reveal_type(WithWeakReference().__weakref__)  # revealed: Any
 ```
 
-The descriptor does not permit assigning to or deleting the attribute.
+The typeshed descriptor permits writing and deleting, so the runtime restriction on weak-reference
+storage is not modeled.
 
 ```py
-WithWeakReference().__weakref__ = None  # error: [invalid-assignment]
-del WithWeakReference().__weakref__  # error: [invalid-assignment]
+WithWeakReference().__weakref__ = None
+del WithWeakReference().__weakref__
 ```
 
 ## A property named `__dict__` does not provide instance storage
@@ -951,15 +911,15 @@ class DeletedDefault:
     del value
 ```
 
-Class assignments inside `TYPE_CHECKING` blocks are visible to static analysis and can conflict with
-slot names.
+Class assignments inside `TYPE_CHECKING` blocks do not execute and therefore cannot conflict with
+runtime slot descriptors.
 
 ```py
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 class TypeCheckingOnly:
     __slots__ = ("value",)
 
     if TYPE_CHECKING:
-        value = 1  # error: [invalid-assignment]
+        value: ClassVar[int] = 1
 ```

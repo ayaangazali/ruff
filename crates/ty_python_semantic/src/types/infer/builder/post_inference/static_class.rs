@@ -111,6 +111,10 @@ fn check_class_slots<'db>(
 
         for binding in use_def.end_of_scope_symbol_bindings(symbol) {
             if let Some(definition) = binding.binding.definition()
+                && !index.is_in_type_checking_block(
+                    scope_id,
+                    definition.kind(db).full_range(context.module()),
+                )
                 && let Some(builder) = context.report_lint(
                     &INVALID_ASSIGNMENT,
                     definition.focus_range(db, context.module()),

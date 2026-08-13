@@ -1128,11 +1128,9 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
             Type::PropertyInstance(property) => f
                 .with_type(self.ty)
                 .write_str(property_display_name(db, property)),
-            Type::SlotDescriptor(descriptor) => f.with_type(self.ty).write_str(
-                descriptor
-                    .instance_class(db)
-                    .name(self.env.python_version(db)),
-            ),
+            Type::SlotDescriptor(_) => f
+                .with_type(self.ty)
+                .write_str(KnownClass::MemberDescriptorType.name(self.env.python_version(db))),
             Type::ModuleLiteral(module) => {
                 f.set_invalid_type_annotation();
                 f.write_char('<')?;

@@ -3066,23 +3066,6 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     .and_then(AssignmentAttributeMembers::type_member)
                 {
                     let attr_ty = attr_ty.bind_self_typevars(db, env, object_ty);
-                    if let Type::SlotDescriptor(descriptor) = attr_ty {
-                        if descriptor.is_writable(db) {
-                            return true;
-                        }
-
-                        if emit_diagnostics
-                            && let Some(builder) =
-                                self.context.report_lint(&INVALID_ASSIGNMENT, target)
-                        {
-                            builder.into_diagnostic(format_args!(
-                                "Cannot delete read-only attribute `{attribute}` on object of type `{}`",
-                                object_ty.display(db, env),
-                            ));
-                        }
-                        return false;
-                    }
-
                     let delete_dunder_call_result = attr_ty.try_call_dunder(
                         db,
                         env,
@@ -12318,8 +12301,7 @@ impl<'db, 'ast> AddBinding<'db, 'ast> {
                 .and_then(AssignmentAttributeMembers::type_member)
                 .and_then(|member| member.place.ignore_possibly_undefined())
                 .is_some_and(|ty| {
-                    ty.may_be_data_descriptor(db, env)
-                        && !matches!(ty, Type::SlotDescriptor(descriptor) if descriptor.is_writable(db))
+                    ty.may_be_data_descriptor(db, env) && !matches!(ty, Type::SlotDescriptor(_))
                 })
             {
                 builder.discard_dict_key_assignments_for(self.binding);

@@ -6,7 +6,7 @@ use ty_python_core::{place_table, use_def_map};
 use crate::place::{DefinedPlace, Definedness, Place, place_from_bindings};
 use crate::types::class::{CodeGeneratorKind, StaticClassLiteral};
 use crate::types::generics::Specialization;
-use crate::types::{ClassBase, DataclassFlags, KnownClass, Type, UnionType};
+use crate::types::{ClassBase, DataclassFlags, KnownClass, Type};
 use crate::{Db, FxIndexSet, ProgramEnvironment};
 
 /// The information that can be recovered from a class's own `__slots__` assignment.
@@ -20,52 +20,16 @@ enum SlotDefinition {
     Dynamic,
 }
 
-/// The runtime descriptor created for an ordinary slot or the weak-reference slot.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, get_size2::GetSize, salsa::SalsaValue)]
-pub enum SlotDescriptorKind {
-    /// A writable `types.MemberDescriptorType` instance.
-    Member,
-    /// A read-only `types.GetSetDescriptorType` instance for `__weakref__`.
-    WeakReference,
-}
-
-/// An interpreter-created descriptor for an instance slot.
+/// An interpreter-created `types.MemberDescriptorType` for an instance slot.
 ///
 /// Unlike a Python property, an ordinary slot reads and writes its instance storage directly.
-/// The `__weakref__` slot instead exposes the instance's read-only weak-reference storage.
 #[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
 pub struct SlotDescriptorType<'db> {
     #[returns(copy)]
     pub(crate) value_type: Type<'db>,
-    #[returns(copy)]
-    pub(crate) kind: SlotDescriptorKind,
 }
 
 impl get_size2::GetSize for SlotDescriptorType<'_> {}
-
-impl<'db> SlotDescriptorType<'db> {
-    /// Returns the descriptor's actual runtime class.
-    pub(crate) fn instance_class(self, db: &'db dyn Db) -> KnownClass {
-        match self.kind(db) {
-            SlotDescriptorKind::Member => KnownClass::MemberDescriptorType,
-            SlotDescriptorKind::WeakReference => KnownClass::GetSetDescriptorType,
-        }
-    }
-
-    /// Returns the nominal descriptor type for operations unrelated to slot storage.
-    pub(crate) fn instance_fallback(
-        self,
-        db: &'db dyn Db,
-        env: &ProgramEnvironment<'db>,
-    ) -> Type<'db> {
-        self.instance_class(db).to_instance(db, env)
-    }
-
-    /// Returns whether the descriptor permits writing and deleting its instance storage.
-    pub(crate) fn is_writable(self, db: &'db dyn Db) -> bool {
-        matches!(self.kind(db), SlotDescriptorKind::Member)
-    }
-}
 
 /// Whether instances can store attributes in an ordinary instance dictionary.
 ///
@@ -451,8 +415,8 @@ impl<'db> StaticClassLiteral<'db> {
     ///     __slots__ = ("value", "__weakref__")
     /// ```
     ///
-    /// Ordinary slots use writable `MemberDescriptorType` descriptors. The weak-reference slot
-    /// uses a read-only `GetSetDescriptorType` descriptor.
+    /// Ordinary slots use `MemberDescriptorType` descriptors. The weak-reference slot uses the
+    /// `GetSetDescriptorType` descriptor declared in typeshed.
     pub(super) fn own_slot_descriptor(
         self,
         db: &'db dyn Db,
@@ -460,21 +424,16 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> Type<'db> {
-        let (value_ty, kind) = if name == "__weakref__" {
-            (
-                UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env)),
-                SlotDescriptorKind::WeakReference,
-            )
-        } else {
-            (
-                self.own_instance_member(db, env, name)
-                    .ignore_possibly_undefined()
-                    .map(|ty| ty.apply_optional_specialization(db, specialization))
-                    .unwrap_or_else(Type::unknown),
-                SlotDescriptorKind::Member,
-            )
-        };
+        if name == "__weakref__" {
+            return KnownClass::GetSetDescriptorType.to_instance(db, env);
+        }
 
-        Type::SlotDescriptor(SlotDescriptorType::new(db, value_ty, kind))
+        let value_ty = self
+            .own_instance_member(db, env, name)
+            .ignore_possibly_undefined()
+            .map(|ty| ty.apply_optional_specialization(db, specialization))
+            .unwrap_or_else(Type::unknown);
+
+        Type::SlotDescriptor(SlotDescriptorType::new(db, value_ty))
     }
 }

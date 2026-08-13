@@ -613,12 +613,6 @@ impl<'db> AssignmentAttributeWriteEvaluator<'_, 'db, '_, '_> {
                 value_ty,
                 emit_diagnostics,
             ),
-            ExplicitAttributeWriteRequirement::ReadOnly { .. } => {
-                if emit_diagnostics {
-                    self.report(AssignmentAttributeWriteDiagnostic::CannotAssign);
-                }
-                false
-            }
             ExplicitAttributeWriteRequirement::AssignableTo { ty, .. } => {
                 let value_ty = self.infer_value(TypeContext::new(Some(*ty)), false);
                 self.check_type_pair(value_ty, *ty, emit_diagnostics)

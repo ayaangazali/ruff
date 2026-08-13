@@ -137,8 +137,6 @@ pub(super) enum ExplicitAttributeWriteRequirement<'db> {
         setter_ty: Type<'db>,
         qualifiers: TypeQualifiers,
     },
-    /// The resolved member exists but does not allow assignment.
-    ReadOnly { qualifiers: TypeQualifiers },
     /// Check the assigned value directly against the member's effective write type.
     AssignableTo {
         ty: Type<'db>,
@@ -149,9 +147,9 @@ pub(super) enum ExplicitAttributeWriteRequirement<'db> {
 impl ExplicitAttributeWriteRequirement<'_> {
     pub(super) fn qualifiers(&self) -> TypeQualifiers {
         match self {
-            Self::Descriptor { qualifiers, .. }
-            | Self::ReadOnly { qualifiers }
-            | Self::AssignableTo { qualifiers, .. } => *qualifiers,
+            Self::Descriptor { qualifiers, .. } | Self::AssignableTo { qualifiers, .. } => {
+                *qualifiers
+            }
         }
     }
 }
@@ -575,27 +573,22 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
-    if let Type::SlotDescriptor(descriptor) = attr_ty {
-        if !descriptor.is_writable(db) {
-            return ExplicitAttributeWriteRequirement::ReadOnly { qualifiers };
-        }
-
-        if let PlaceAndQualifiers {
+    if matches!(attr_ty, Type::SlotDescriptor(_))
+        && let PlaceAndQualifiers {
             place: Place::Defined(DefinedPlace { ty, .. }),
             qualifiers: storage_qualifiers,
         } = object_ty.instance_member(db, env, attribute)
-        {
-            return ExplicitAttributeWriteRequirement::AssignableTo {
-                ty: effective_write_type(
-                    db,
-                    env,
-                    object_ty,
-                    attribute,
-                    ty.bind_self_typevars(db, env, object_ty),
-                ),
-                qualifiers: qualifiers.union(storage_qualifiers),
-            };
-        }
+    {
+        return ExplicitAttributeWriteRequirement::AssignableTo {
+            ty: effective_write_type(
+                db,
+                env,
+                object_ty,
+                attribute,
+                ty.bind_self_typevars(db, env, object_ty),
+            ),
+            qualifiers: qualifiers.union(storage_qualifiers),
+        };
     }
 
     if let Place::Defined(DefinedPlace { ty: setter_ty, .. }) = attr_ty
