@@ -228,6 +228,11 @@ impl<'db> StaticClassLiteral<'db> {
     )]
     fn slot_definition(self, db: &'db dyn Db) -> SlotDefinition {
         let body_scope = self.body_scope(db);
+        // Only assignments that reach the runtime class namespace define explicit slots:
+        //
+        //     __slots__: tuple[str, ...]  # No runtime assignment.
+        //     if TYPE_CHECKING:
+        //         __slots__ = ("value",)  # Not present at runtime.
         let Some(symbol) = place_table(db, body_scope)
             .symbol_id("__slots__")
             .filter(|symbol| has_runtime_binding(db, body_scope, *symbol))
@@ -236,6 +241,17 @@ impl<'db> StaticClassLiteral<'db> {
                 return SlotDefinition::Dynamic;
             }
 
+            // Dataclasses generate slots for their fields, excluding inherited storage:
+            //
+            //     class Base:
+            //         __slots__ = ("inherited",)
+            //
+            //     @dataclass(slots=True, weakref_slot=True)
+            //     class Child(Base):
+            //         inherited: int
+            //         value: int
+            //
+            // Here, `Child.__slots__` contains only `value` and `__weakref__`.
             let field_policy = CodeGeneratorKind::DataclassLike(None);
             let inherited_slots: FxIndexSet<_> = self
                 .iter_mro(db, None)
@@ -260,6 +276,11 @@ impl<'db> StaticClassLiteral<'db> {
             }
             return SlotDefinition::Names(names.into_boxed_slice());
         };
+
+        // A conditional assignment does not establish one definite layout:
+        //
+        //     if condition:
+        //         __slots__ = ("value",)
         let env = ProgramEnvironment::from_scope(body_scope);
         let use_def = use_def_map(db, body_scope);
         let bindings = use_def.end_of_scope_symbol_bindings(symbol);
@@ -272,10 +293,18 @@ impl<'db> StaticClassLiteral<'db> {
             return SlotDefinition::Dynamic;
         };
 
+        // A single string is itself a slot name: `__slots__ = "value"`.
         if let Some(name) = slots_ty.as_string_literal() {
             return SlotDefinition::Names(Box::new([Name::new(name.value(db))]));
         }
 
+        // Tuple inference preserves individual names, including names supplied indirectly:
+        //
+        //     names = ("first", "second")
+        //     __slots__ = names
+        //
+        // An unknown tuple element prevents recovering every name, but still proves the
+        // declaration is nonempty.
         if let Type::NominalInstance(instance) = slots_ty
             && let Some(specification) = instance.tuple_spec(db, &env)
             && let Some(tuple) = specification.as_fixed_length()
@@ -291,6 +320,13 @@ impl<'db> StaticClassLiteral<'db> {
                 .map_or(SlotDefinition::NonEmpty, SlotDefinition::Names);
         }
 
+        // Mutable container types do not retain their individual literal elements:
+        //
+        //     __slots__ = ["value"]
+        //     __slots__ = {"value"}
+        //     __slots__ = {"value": "Documentation"}
+        //
+        // Recover their names from the single reaching class-body assignment instead.
         let Ok(definition) = use_def
             .end_of_scope_symbol_bindings(symbol)
             .filter_map(|binding| binding.binding.definition())
