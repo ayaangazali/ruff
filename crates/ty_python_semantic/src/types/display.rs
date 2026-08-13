@@ -1013,11 +1013,17 @@ struct DisplayRepresentation<'env, 'db> {
     settings: DisplaySettings<'db>,
 }
 
-fn property_display_name(db: &dyn Db, property: PropertyInstanceType<'_>) -> &'static str {
-    if property.instance_class(db) == KnownClass::EnumProperty {
-        "enum.property"
-    } else {
-        "property"
+fn descriptor_display_name(db: &dyn Db, descriptor: PropertyInstanceType<'_>) -> &'static str {
+    descriptor_class_display_name(descriptor.instance_class(db))
+}
+
+/// Format a descriptor class using the spelling expected in diagnostics.
+pub(super) fn descriptor_class_display_name(class: KnownClass) -> &'static str {
+    match class {
+        KnownClass::EnumProperty => "enum.property",
+        KnownClass::MemberDescriptorType => "MemberDescriptorType",
+        KnownClass::GetSetDescriptorType => "GetSetDescriptorType",
+        _ => "property",
     }
 }
 
@@ -1127,7 +1133,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
             },
             Type::PropertyInstance(property) => f
                 .with_type(self.ty)
-                .write_str(property_display_name(db, property)),
+                .write_str(descriptor_display_name(db, property)),
             Type::ModuleLiteral(module) => {
                 f.set_invalid_type_annotation();
                 f.write_char('<')?;
@@ -1293,7 +1299,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderGet(property) => (
                         property.instance_class(db),
                         "__get__",
-                        property_display_name(db, property),
+                        descriptor_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .getter(db)
@@ -1303,7 +1309,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderSet(property) => (
                         property.instance_class(db),
                         "__set__",
-                        property_display_name(db, property),
+                        descriptor_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .setter(db)
@@ -1313,7 +1319,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderDelete(property) => (
                         property.instance_class(db),
                         "__delete__",
-                        property_display_name(db, property),
+                        descriptor_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .deleter(db)
@@ -1398,14 +1404,14 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     WrapperDescriptorKind::FunctionTypeDunderGet => {
                         ("__get__", "function", KnownClass::FunctionType)
                     }
-                    WrapperDescriptorKind::PropertyDunderGet => {
-                        ("__get__", "property", KnownClass::Property)
+                    WrapperDescriptorKind::PropertyDunderGet(class) => {
+                        ("__get__", descriptor_class_display_name(class), class)
                     }
-                    WrapperDescriptorKind::PropertyDunderSet => {
-                        ("__set__", "property", KnownClass::Property)
+                    WrapperDescriptorKind::PropertyDunderSet(class) => {
+                        ("__set__", descriptor_class_display_name(class), class)
                     }
-                    WrapperDescriptorKind::PropertyDunderDelete => {
-                        ("__delete__", "property", KnownClass::Property)
+                    WrapperDescriptorKind::PropertyDunderDelete(class) => {
+                        ("__delete__", descriptor_class_display_name(class), class)
                     }
                 };
                 f.write_char('<')?;

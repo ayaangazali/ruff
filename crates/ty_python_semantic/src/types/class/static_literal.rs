@@ -256,6 +256,8 @@ impl InstanceDictionary {
             | KnownClass::Dict
             | KnownClass::Slice
             | KnownClass::Property
+            | KnownClass::MemberDescriptorType
+            | KnownClass::GetSetDescriptorType
             | KnownClass::Staticmethod
             | KnownClass::Classmethod
             | KnownClass::Super
@@ -399,13 +401,26 @@ impl<'db> StaticClassLiteral<'db> {
             }
 
             let field_policy = CodeGeneratorKind::DataclassLike(None);
+            let inherited_slots: FxIndexSet<_> = self
+                .iter_mro(db, None)
+                .skip(1)
+                .filter_map(ClassBase::into_class)
+                .filter_map(|class| class.static_class_literal(db).map(|(class, _)| class))
+                .filter_map(|class| class.slot_names(db))
+                .flatten()
+                .cloned()
+                .collect();
+            let weakref_name = Name::new_static("__weakref__");
             let mut names: Vec<_> = self
                 .fields(db, None, field_policy)
                 .keys()
+                .filter(|name| !inherited_slots.contains(*name))
                 .cloned()
                 .collect();
-            if self.has_dataclass_param(db, field_policy, DataclassFlags::WEAKREF_SLOT) {
-                names.push(Name::new_static("__weakref__"));
+            if self.has_dataclass_param(db, field_policy, DataclassFlags::WEAKREF_SLOT)
+                && !inherited_slots.contains(&weakref_name)
+            {
+                names.push(weakref_name);
             }
             return SlotDefinition::Names(names.into_boxed_slice());
         };
@@ -1743,17 +1758,25 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> Type<'db> {
-        let value_ty = if name == "__dict__" {
-            KnownClass::Dict.to_specialized_instance(
+        let value_ty = match name {
+            "__dict__" => KnownClass::Dict.to_specialized_instance(
                 db,
                 env,
                 &[KnownClass::Str.to_instance(db, env), Type::any()],
-            )
-        } else {
-            self.own_instance_member(db, env, name)
+            ),
+            "__weakref__" => {
+                UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env))
+            }
+            _ => self
+                .own_instance_member(db, env, name)
                 .ignore_possibly_undefined()
                 .map(|ty| ty.apply_optional_specialization(db, specialization))
-                .unwrap_or_else(Type::unknown)
+                .unwrap_or_else(Type::unknown),
+        };
+        let descriptor_class = if matches!(name, "__dict__" | "__weakref__") {
+            KnownClass::GetSetDescriptorType
+        } else {
+            KnownClass::MemberDescriptorType
         };
 
         let getter = Type::single_callable(
@@ -1788,7 +1811,13 @@ impl<'db> StaticClassLiteral<'db> {
             )
         });
 
-        Type::PropertyInstance(PropertyInstanceType::new_slot(db, getter, setter, deleter))
+        Type::PropertyInstance(PropertyInstanceType::new_slot(
+            db,
+            descriptor_class,
+            getter,
+            setter,
+            deleter,
+        ))
     }
 
     /// Returns the inferred type of the class member named `name`. Only bound members
@@ -1919,9 +1948,7 @@ impl<'db> StaticClassLiteral<'db> {
                         .is_undefined()
                     });
 
-            if (!has_class_binding || generated_slots)
-                && !(generated_slots && name == "__weakref__")
-            {
+            if !has_class_binding || generated_slots {
                 return Member::definitely_declared(self.own_slot_descriptor(
                     db,
                     env,
@@ -2409,24 +2436,6 @@ impl<'db> StaticClassLiteral<'db> {
                     .map(|(name, _)| Type::string_literal(db, name));
                 Some(Type::heterogeneous_tuple(db, env, match_args))
             }
-            (field_policy @ CodeGeneratorKind::DataclassLike(_), "__weakref__")
-                if env.python_version(db) >= PythonVersion::PY311 =>
-            {
-                if !self.has_dataclass_param(db, field_policy, DataclassFlags::WEAKREF_SLOT)
-                    || !self.has_dataclass_param(db, field_policy, DataclassFlags::SLOTS)
-                {
-                    return None;
-                }
-
-                // This could probably be `weakref | None`, but it does not seem important enough to
-                // model it precisely.
-                Some(UnionType::from_two_elements(
-                    db,
-                    env,
-                    Type::any(),
-                    Type::none(db, env),
-                ))
-            }
             (CodeGeneratorKind::NamedTuple, name) if name != "__init__" => {
                 KnownClass::NamedTupleFallback
                     .to_class_literal(db, env)
@@ -2503,6 +2512,14 @@ impl<'db> StaticClassLiteral<'db> {
             {
                 self.has_dataclass_param(db, field_policy, DataclassFlags::SLOTS)
                     .then(|| {
+                        if let Some(slots) = self.slot_names(db) {
+                            return Type::heterogeneous_tuple(
+                                db,
+                                env,
+                                slots.iter().map(|name| Type::string_literal(db, name)),
+                            );
+                        }
+
                         let fields = self.fields(db, specialization, field_policy);
                         let slots = fields.keys().map(|name| Type::string_literal(db, name));
                         Type::heterogeneous_tuple(db, env, slots)

@@ -999,7 +999,10 @@ pub enum PropertyAccessorRole {
     Deleter,
 }
 
-/// Models a property-like descriptor, including synthesized descriptors for instance slots.
+/// Models a descriptor with specialized getter, setter, and deleter types.
+///
+/// Besides Python properties, this represents slot descriptors while retaining their actual
+/// `types.MemberDescriptorType` or `types.GetSetDescriptorType` runtime class.
 #[salsa::interned(debug, constructor=new_internal, heap_size=ruff_memory_usage::heap_size)]
 pub struct PropertyInstanceType<'db> {
     #[returns(copy)]
@@ -1010,9 +1013,6 @@ pub struct PropertyInstanceType<'db> {
     pub deleter: Option<Type<'db>>,
     #[returns(copy)]
     instance_class: KnownClass,
-    /// Slots can acquire a more precise inferred value from assignments in a subclass.
-    #[returns(copy)]
-    is_slot_descriptor: bool,
 }
 
 fn walk_property_instance_type<'db, V: visitor::TypeVisitor<'db> + ?Sized>(
@@ -1041,24 +1041,18 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(db, getter, setter, deleter, KnownClass::Property, false)
+        Self::new_internal(db, getter, setter, deleter, KnownClass::Property)
     }
 
     /// Model a runtime slot descriptor through the existing typed accessor machinery.
     fn new_slot(
         db: &'db dyn Db,
+        instance_class: KnownClass,
         getter: Type<'db>,
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(
-            db,
-            Some(getter),
-            setter,
-            deleter,
-            KnownClass::Property,
-            true,
-        )
+        Self::new_internal(db, Some(getter), setter, deleter, instance_class)
     }
 
     fn new_enum_property(
@@ -1067,7 +1061,7 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(db, getter, setter, deleter, KnownClass::EnumProperty, false)
+        Self::new_internal(db, getter, setter, deleter, KnownClass::EnumProperty)
     }
 
     fn with_accessors(
@@ -1077,13 +1071,14 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(
-            db,
-            getter,
-            setter,
-            deleter,
+        Self::new_internal(db, getter, setter, deleter, self.instance_class(db))
+    }
+
+    /// Whether this descriptor represents storage introduced by an instance slot.
+    fn is_slot_descriptor(self, db: &'db dyn Db) -> bool {
+        matches!(
             self.instance_class(db),
-            self.is_slot_descriptor(db),
+            KnownClass::MemberDescriptorType | KnownClass::GetSetDescriptorType
         )
     }
 
@@ -1385,7 +1380,7 @@ pub enum Type<'db> {
     /// created as a result of some runtime operation (e.g. a type-alias statement,
     /// a typevar definition, or `Generic[T]` in a class's bases list).
     KnownInstance(KnownInstanceType<'db>),
-    /// An instance of `builtins.property`
+    /// A descriptor instance with specialized getter, setter, and deleter types.
     PropertyInstance(PropertyInstanceType<'db>),
     /// The set of objects in any of the types in the union
     Union(UnionType<'db>),
@@ -3092,24 +3087,28 @@ impl<'db> Type<'db> {
                         // Hard code this knowledge, as we look up `__set__` and `__delete__` on `FunctionType` often.
                         Some(Place::Undefined.into())
                     }
-                    (Some(KnownClass::Property | KnownClass::EnumProperty), "__get__") => Some(
-                        Place::bound(Type::WrapperDescriptor(
-                            WrapperDescriptorKind::PropertyDunderGet,
-                        ))
-                        .into(),
-                    ),
-                    (Some(KnownClass::Property | KnownClass::EnumProperty), "__set__") => Some(
-                        Place::bound(Type::WrapperDescriptor(
-                            WrapperDescriptorKind::PropertyDunderSet,
-                        ))
-                        .into(),
-                    ),
-                    (Some(KnownClass::Property), "__delete__") => Some(
-                        Place::bound(Type::WrapperDescriptor(
-                            WrapperDescriptorKind::PropertyDunderDelete,
-                        ))
-                        .into(),
-                    ),
+                    (
+                        Some(
+                            descriptor_class @ (KnownClass::Property
+                            | KnownClass::EnumProperty
+                            | KnownClass::MemberDescriptorType
+                            | KnownClass::GetSetDescriptorType),
+                        ),
+                        "__get__" | "__set__" | "__delete__",
+                    ) if name != "__delete__" || descriptor_class != KnownClass::EnumProperty => {
+                        Some(
+                            Place::bound(Type::WrapperDescriptor(match name {
+                                "__get__" => {
+                                    WrapperDescriptorKind::PropertyDunderGet(descriptor_class)
+                                }
+                                "__set__" => {
+                                    WrapperDescriptorKind::PropertyDunderSet(descriptor_class)
+                                }
+                                _ => WrapperDescriptorKind::PropertyDunderDelete(descriptor_class),
+                            }))
+                            .into(),
+                        )
+                    }
 
                     _ => Some(class.class_member(db, env, name, policy)),
                 }
@@ -4892,7 +4891,7 @@ impl<'db> Type<'db> {
                     if name == "__get__" && class.is_known(db, KnownClass::Property) =>
                 {
                     Place::bound(Type::WrapperDescriptor(
-                        WrapperDescriptorKind::PropertyDunderGet,
+                        WrapperDescriptorKind::PropertyDunderGet(KnownClass::Property),
                     ))
                     .into()
                 }
@@ -4900,7 +4899,7 @@ impl<'db> Type<'db> {
                     if name == "__set__" && class.is_known(db, KnownClass::Property) =>
                 {
                     Place::bound(Type::WrapperDescriptor(
-                        WrapperDescriptorKind::PropertyDunderSet,
+                        WrapperDescriptorKind::PropertyDunderSet(KnownClass::Property),
                     ))
                     .into()
                 }
@@ -4908,7 +4907,7 @@ impl<'db> Type<'db> {
                     if name == "__delete__" && class.is_known(db, KnownClass::Property) =>
                 {
                     Place::bound(Type::WrapperDescriptor(
-                        WrapperDescriptorKind::PropertyDunderDelete,
+                        WrapperDescriptorKind::PropertyDunderDelete(KnownClass::Property),
                     ))
                     .into()
                 }
@@ -4971,13 +4970,19 @@ impl<'db> Type<'db> {
                     Place::bound(Type::int_literal(segment.into())).into()
                 }
 
-                Type::PropertyInstance(property) if name == "fget" => {
+                Type::PropertyInstance(property)
+                    if name == "fget" && !property.is_slot_descriptor(db) =>
+                {
                     Place::bound(property.getter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property) if name == "fset" => {
+                Type::PropertyInstance(property)
+                    if name == "fset" && !property.is_slot_descriptor(db) =>
+                {
                     Place::bound(property.setter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property) if name == "fdel" => {
+                Type::PropertyInstance(property)
+                    if name == "fdel" && !property.is_slot_descriptor(db) =>
+                {
                     Place::bound(property.deleter(db).unwrap_or(Type::none(db, env))).into()
                 }
 

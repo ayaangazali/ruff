@@ -44,6 +44,7 @@ use crate::types::diagnostic::{
     POSITIONAL_ONLY_PARAMETER_AS_KWARG, TOO_MANY_POSITIONAL_ARGUMENTS, UNKNOWN_ARGUMENT,
     add_invariant_generic_hints, note_numbers_module_not_supported,
 };
+use crate::types::display::descriptor_class_display_name;
 use crate::types::enums::is_enum_class;
 use crate::types::function::{
     DataclassTransformerFlags, DataclassTransformerParams, FunctionType, KnownFunction,
@@ -1655,7 +1656,7 @@ impl<'db> Bindings<'db> {
                         }
                     }
 
-                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderGet) => {
+                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderGet(_)) => {
                         match overload.parameter_types() {
                             [
                                 Some(property @ Type::PropertyInstance(_)),
@@ -1746,7 +1747,7 @@ impl<'db> Bindings<'db> {
                         }
                     }
 
-                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderSet) => {
+                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderSet(_)) => {
                         if let [
                             Some(Type::PropertyInstance(property)),
                             Some(instance),
@@ -1765,7 +1766,7 @@ impl<'db> Bindings<'db> {
                         }
                     }
 
-                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderDelete) => {
+                    Type::WrapperDescriptor(WrapperDescriptorKind::PropertyDunderDelete(_)) => {
                         if let [Some(Type::PropertyInstance(property)), Some(instance), ..] =
                             overload.parameter_types()
                         {
@@ -7993,27 +7994,54 @@ impl<'db> CallableDescription<'db> {
                     name: Cow::Borrowed(function.name(db)),
                 })
             }
-            Type::KnownBoundMethod(KnownBoundMethodType::PropertyDunderGet(_)) => {
+            Type::KnownBoundMethod(KnownBoundMethodType::PropertyDunderGet(descriptor)) => {
                 Some(CallableDescription {
                     kind: Some("method wrapper"),
-                    name: Cow::Borrowed("`__get__` of property"),
+                    name: if descriptor.instance_class(db) == KnownClass::Property {
+                        Cow::Borrowed("`__get__` of property")
+                    } else {
+                        Cow::Owned(format!(
+                            "`__get__` of {}",
+                            descriptor_class_display_name(descriptor.instance_class(db))
+                        ))
+                    },
                 })
             }
-            Type::KnownBoundMethod(KnownBoundMethodType::PropertyDunderDelete(_)) => {
+            Type::KnownBoundMethod(KnownBoundMethodType::PropertyDunderDelete(descriptor)) => {
                 Some(CallableDescription {
                     kind: Some("method wrapper"),
-                    name: Cow::Borrowed("`__delete__` of property"),
+                    name: if descriptor.instance_class(db) == KnownClass::Property {
+                        Cow::Borrowed("`__delete__` of property")
+                    } else {
+                        Cow::Owned(format!(
+                            "`__delete__` of {}",
+                            descriptor_class_display_name(descriptor.instance_class(db))
+                        ))
+                    },
                 })
             }
-            Type::WrapperDescriptor(kind) => Some(CallableDescription {
-                kind: Some("wrapper descriptor"),
-                name: Cow::Borrowed(match kind {
-                    WrapperDescriptorKind::FunctionTypeDunderGet => "FunctionType.__get__",
-                    WrapperDescriptorKind::PropertyDunderGet => "property.__get__",
-                    WrapperDescriptorKind::PropertyDunderSet => "property.__set__",
-                    WrapperDescriptorKind::PropertyDunderDelete => "property.__delete__",
-                }),
-            }),
+            Type::WrapperDescriptor(kind) => {
+                let name = match kind {
+                    WrapperDescriptorKind::FunctionTypeDunderGet => {
+                        Cow::Borrowed("FunctionType.__get__")
+                    }
+                    WrapperDescriptorKind::PropertyDunderGet(class) => {
+                        Cow::Owned(format!("{}.__get__", descriptor_class_display_name(class)))
+                    }
+                    WrapperDescriptorKind::PropertyDunderSet(class) => {
+                        Cow::Owned(format!("{}.__set__", descriptor_class_display_name(class)))
+                    }
+                    WrapperDescriptorKind::PropertyDunderDelete(class) => Cow::Owned(format!(
+                        "{}.__delete__",
+                        descriptor_class_display_name(class)
+                    )),
+                };
+
+                Some(CallableDescription {
+                    kind: Some("wrapper descriptor"),
+                    name,
+                })
+            }
             _ => None,
         }
     }

@@ -1696,8 +1696,8 @@ reveal_type(B.__slots__)  # revealed: tuple[Literal["x"], Literal["y"]]
 
 ### `weakref_slot`
 
-When a dataclass is defined with `weakref_slot=True` on Python >=3.11, the `__weakref__` attribute
-is generated. For now, we do not attempt to infer a more precise type for it.
+When a dataclass is defined with `weakref_slot=True` on Python >=3.11, a `__weakref__` descriptor is
+generated. Subclasses reuse the inherited weak-reference slot instead of creating another one.
 
 ```toml
 [environment]
@@ -1711,7 +1711,15 @@ from dataclasses import dataclass
 class C:
     x: int
 
-reveal_type(C.__weakref__)  # revealed: Any | None
+reveal_type(C.__weakref__)  # revealed: GetSetDescriptorType
+reveal_type(C(1).__weakref__)  # revealed: Any | None
+reveal_type(C.__slots__)  # revealed: tuple[Literal["x"], Literal["__weakref__"]]
+
+@dataclass(slots=True, weakref_slot=True)
+class Child(C):
+    y: int
+
+reveal_type(Child.__slots__)  # revealed: tuple[Literal["y"]]
 ```
 
 `weakref_slot=True` requires `slots=True`:
