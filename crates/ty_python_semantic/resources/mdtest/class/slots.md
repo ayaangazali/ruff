@@ -4,7 +4,8 @@ Classes can declare instance attributes and restrict their instance layout with 
 
 ## Slot names declare instance attributes
 
-A slot is a valid instance attribute even when no method assigns to it.
+A slot is a valid instance attribute even when no method assigns to it. It can be read and assigned
+without a type error, even though its type is unknown.
 
 ```py
 class Slotted:
@@ -16,7 +17,7 @@ Slotted().value = 1
 
 ## Slots create class descriptors
 
-A slot is represented by a `MemberDescriptorType` on the class that declares it. It is not a
+Accessing a slot on the class returns a `MemberDescriptorType` descriptor. This descriptor is not a
 `property` and does not expose property attributes.
 
 ```py
