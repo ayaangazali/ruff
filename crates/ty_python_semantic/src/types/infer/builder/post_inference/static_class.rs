@@ -92,7 +92,7 @@ fn check_class_slots<'db>(
     let table = index.place_table(scope_id);
     let use_def = index.use_def_map(scope_id);
 
-    if class.has_explicit_slots(db) {
+    if class.has_explicit_slots(db) && !context.in_stub() {
         for name in slot_names {
             let Some(symbol) = table.symbol_id(name) else {
                 continue;

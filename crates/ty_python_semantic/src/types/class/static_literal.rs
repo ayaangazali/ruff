@@ -1935,8 +1935,8 @@ impl<'db> StaticClassLiteral<'db> {
             .is_some_and(|slots| slots.iter().any(|slot| slot == name))
         {
             let generated_slots = self.has_generated_slots(db);
-            let has_class_binding =
-                place_table(db, body_scope)
+            let has_runtime_class_binding = !self.file(db).is_stub(db)
+                && place_table(db, body_scope)
                     .symbol_id(name)
                     .is_some_and(|symbol| {
                         !place_from_bindings(
@@ -1948,7 +1948,7 @@ impl<'db> StaticClassLiteral<'db> {
                         .is_undefined()
                     });
 
-            if !has_class_binding || generated_slots {
+            if !has_runtime_class_binding || generated_slots {
                 return Member::definitely_declared(self.own_slot_descriptor(
                     db,
                     env,
@@ -3754,7 +3754,10 @@ impl<'db> StaticClassLiteral<'db> {
 
                     let bindings = use_def.end_of_scope_symbol_bindings(symbol_id);
                     let inferred = place_from_bindings(db, env, bindings).place;
-                    let has_binding = !inferred.is_undefined();
+                    // Stub annotations are bindings for inference, but an annotated slot is
+                    // still instance storage rather than a class-level default.
+                    let has_binding = !(inferred.is_undefined()
+                        || self.file(db).is_stub(db) && self.has_instance_slot(db, name));
 
                     if has_binding {
                         // The attribute is declared and bound in the class body.

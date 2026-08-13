@@ -91,6 +91,52 @@ Slotted().value = 1
 Slotted().value = "wrong"  # error: [invalid-assignment]
 ```
 
+## Slotted attributes declared in stub files
+
+A stub annotation describes a runtime slot without creating a conflicting class variable, whether
+the annotation has an ellipsis placeholder or no value at all.
+
+```pyi
+from types import MemberDescriptorType
+
+class Slotted:
+    __slots__ = ("value", "other")
+    value: int
+    other: str = ...
+
+reveal_type(Slotted.value)  # revealed: MemberDescriptorType
+reveal_type(Slotted.other)  # revealed: MemberDescriptorType
+
+instance = Slotted()
+reveal_type(instance.value)  # revealed: int
+reveal_type(instance.other)  # revealed: str
+instance.value = 1
+instance.value = "wrong"  # error: [invalid-assignment]
+instance.other = "valid"
+instance.other = 1  # error: [invalid-assignment]
+```
+
+## Standard-library slot declarations
+
+Standard-library stubs declare writable slotted attributes using ordinary annotations.
+
+```py
+from tarfile import TarInfo
+from zipfile import ZipInfo
+
+tar_info = TarInfo("example")
+reveal_type(tar_info.size)  # revealed: int
+tar_info.size = 1
+tar_info.name = "updated"
+tar_info.size = "wrong"  # error: [invalid-assignment]
+
+zip_info = ZipInfo("example")
+reveal_type(zip_info.external_attr)  # revealed: int
+zip_info.external_attr = 1
+zip_info.filename = "updated"
+zip_info.external_attr = "wrong"  # error: [invalid-assignment]
+```
+
 ## Slot descriptors preserve generic specialization
 
 A generic slot has the value type provided by the receiver's specialization.
