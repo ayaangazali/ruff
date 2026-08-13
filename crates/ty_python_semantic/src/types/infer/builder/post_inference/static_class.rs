@@ -28,10 +28,10 @@ use crate::{
             ABSTRACT_METHOD_IN_FINAL_CLASS, AbstractMethodAnnotationPolicy, CONFLICTING_METACLASS,
             CYCLIC_CLASS_DEFINITION, DATACLASS_FIELD_ORDER, DUPLICATE_KW_ONLY, FINAL_WITHOUT_VALUE,
             INCONSISTENT_MRO, INSTANCE_LAYOUT_CONFLICT, INVALID_ARGUMENT_TYPE, INVALID_ASSIGNMENT,
-            INVALID_BASE, INVALID_DATACLASS, INVALID_DECLARATION, INVALID_GENERIC_CLASS,
-            INVALID_GENERIC_ENUM, INVALID_METACLASS, INVALID_NAMED_TUPLE, INVALID_PROTOCOL,
-            INVALID_TYPED_DICT_HEADER, IncompatibleBases, SUBCLASS_OF_DATACLASS_WITH_ORDER,
-            SUBCLASS_OF_FINAL_CLASS, UNKNOWN_ARGUMENT, report_bad_frozen_dataclass_inheritance,
+            INVALID_BASE, INVALID_DATACLASS, INVALID_GENERIC_CLASS, INVALID_GENERIC_ENUM,
+            INVALID_METACLASS, INVALID_NAMED_TUPLE, INVALID_PROTOCOL, INVALID_TYPED_DICT_HEADER,
+            IncompatibleBases, SUBCLASS_OF_DATACLASS_WITH_ORDER, SUBCLASS_OF_FINAL_CLASS,
+            UNKNOWN_ARGUMENT, report_bad_frozen_dataclass_inheritance,
             report_conflicting_metaclass_from_bases, report_duplicate_bases,
             report_inconsistent_generic_bases, report_instance_layout_conflict,
             report_invalid_attribute_assignment, report_invalid_named_tuple_field_qualifier,
@@ -111,38 +111,6 @@ fn check_class_slots<'db>(
                         "Class variable `{name}` conflicts with an instance slot"
                     ));
                 }
-            }
-        }
-    }
-
-    if !class.has_instance_dictionary(db) {
-        let dataclass_fields = CodeGeneratorKind::from_class(db, class.into())
-            .filter(|kind| kind.is_dataclass_like())
-            .map(|kind| class.own_fields(db, None, kind));
-
-        for (name, qualifiers, definition) in class.own_annotated_qualifiers(db) {
-            if qualifiers.contains(TypeQualifiers::CLASS_VAR)
-                || class.has_instance_slot(db, &name)
-                || dataclass_fields
-                    .and_then(|fields| fields.get(&name))
-                    .is_some_and(|field| field.is_kw_only_sentinel(db))
-            {
-                continue;
-            }
-
-            let DefinitionKind::AnnotatedAssignment(assignment) = definition.kind(db) else {
-                continue;
-            };
-
-            if assignment.value(context.module()).is_none()
-                && let Some(builder) = context.report_lint(
-                    &INVALID_DECLARATION,
-                    definition.focus_range(db, context.module()),
-                )
-            {
-                builder.into_diagnostic(format_args!(
-                    "Instance attribute `{name}` is not included in `__slots__`"
-                ));
             }
         }
     }

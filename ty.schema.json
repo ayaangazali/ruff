@@ -716,7 +716,7 @@
         },
         "invalid-declaration": {
           "title": "detects invalid declarations",
-          "description": "## What it does\n\nChecks for declarations where the inferred type of an existing symbol is not\n[assignable to] its post-hoc declared type, or where an instance attribute is declared\nwithout an available slot in a class that does not have an instance dictionary.\n\n## Why is this bad?\n\nSuch declarations break the rules of the type system and\nweaken a type checker's ability to accurately reason about your code.\n\n## Examples\n\n```python\na = 1\na: str  # error\n```\n\nAn instance attribute also cannot be declared if the class's slots do not provide\nstorage for it:\n\n```python\nclass Slotted:\n    __slots__ = (\"value\",)\n    value: int\n    other: int  # error\n```\n\n[assignable to]: https://typing.python.org/en/latest/spec/glossary.html#term-assignable",
+          "description": "## What it does\n\nChecks for declarations where the inferred type of an existing symbol\nis not [assignable to] its post-hoc declared type.\n\n## Why is this bad?\n\nSuch declarations break the rules of the type system and\nweaken a type checker's ability to accurately reason about your code.\n\n## Examples\n\n```python\na = 1\na: str  # error\n```\n\n[assignable to]: https://typing.python.org/en/latest/spec/glossary.html#term-assignable",
           "default": "error",
           "oneOf": [
             {

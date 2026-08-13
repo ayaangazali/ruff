@@ -360,7 +360,7 @@ reveal_type(KeywordOnlySlots.__slots__)  # revealed: tuple[Literal["required"], 
 
 class OrdinaryWithMarker:
     __slots__ = ("required",)
-    marker: KW_ONLY  # error: [invalid-declaration]
+    marker: KW_ONLY
 ```
 
 ## Synthesized dataclass slots exclude inherited storage
@@ -596,19 +596,31 @@ class SlottedDataclass(OrdinaryBase):
 reveal_type(SlottedDataclass.__slots__)  # revealed: tuple[Literal["value"], Literal["__weakref__"]]
 ```
 
-## Class-body annotations respect the slot layout
+## Class-body annotations do not require instance storage
 
-A bare instance-attribute annotation must name an available slot when instances have no dictionary.
-Class variables remain valid because they are stored on the class.
+A bare annotation can describe an attribute provided by a subclass, a dynamically installed
+descriptor, or a custom attribute accessor. The annotation itself does not require an instance slot.
 
 ```py
-from typing import ClassVar
+from typing import ClassVar, TYPE_CHECKING
 
 class Slotted:
     __slots__ = ("value",)
     value: int
     shared: ClassVar[int] = 1
-    missing: int  # error: [invalid-declaration]
+    missing: int
+
+    if TYPE_CHECKING:
+        dynamic: int
+
+Slotted().missing = 1  # error: [unresolved-attribute]
+
+class Mixin:
+    __slots__ = ()
+    provided_by_subclass: int
+
+class Child(Mixin):
+    __slots__ = ("provided_by_subclass",)
 ```
 
 ## Class variables cannot conflict with slots
