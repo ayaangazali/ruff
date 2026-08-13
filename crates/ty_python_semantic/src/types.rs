@@ -3386,6 +3386,22 @@ impl<'db> Type<'db> {
                 "Calling `class_object_member` on class literals and subclass-of types \
                 should always find an MRO",
             );
+        // `type.__dict__` is a data descriptor at runtime, but typeshed represents it as a plain
+        // annotation. An instance-dictionary slot must not consequently shadow the class namespace.
+        let class_attr = if name == "__dict__"
+            && class_attr
+                .place
+                .ignore_possibly_undefined()
+                .and_then(Type::as_property_instance)
+                .is_some_and(|property| property.is_slot_descriptor(db))
+        {
+            KnownClass::Object
+                .to_class_literal(db, env)
+                .find_name_in_mro_with_policy(db, env, name, policy)
+                .unwrap_or(class_attr)
+        } else {
+            class_attr
+        };
 
         let own_class = match self {
             Type::SubclassOf(subclass_of) => match subclass_of.subclass_of() {
