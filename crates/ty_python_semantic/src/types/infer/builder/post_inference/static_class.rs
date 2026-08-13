@@ -116,8 +116,16 @@ fn check_class_slots<'db>(
     }
 
     if !class.has_instance_dictionary(db) {
+        let dataclass_fields = CodeGeneratorKind::from_class(db, class.into())
+            .filter(|kind| kind.is_dataclass_like())
+            .map(|kind| class.own_fields(db, None, kind));
+
         for (name, qualifiers, definition) in class.own_annotated_qualifiers(db) {
-            if qualifiers.contains(TypeQualifiers::CLASS_VAR) || class.has_instance_slot(db, &name)
+            if qualifiers.contains(TypeQualifiers::CLASS_VAR)
+                || class.has_instance_slot(db, &name)
+                || dataclass_fields
+                    .and_then(|fields| fields.get(&name))
+                    .is_some_and(|field| field.is_kw_only_sentinel(db))
             {
                 continue;
             }

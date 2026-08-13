@@ -344,6 +344,25 @@ class SlottedChild(SlottedDataclass):
 SlottedChild(1).__dict__  # error: [unresolved-attribute]
 ```
 
+A `KW_ONLY` sentinel changes constructor parameter ordering but does not need instance storage,
+regardless of the sentinel's name.
+
+```py
+from dataclasses import KW_ONLY
+
+@dataclass(slots=True)
+class KeywordOnlySlots:
+    required: int
+    marker: KW_ONLY
+    keyword_only: int
+
+reveal_type(KeywordOnlySlots.__slots__)  # revealed: tuple[Literal["required"], Literal["keyword_only"]]
+
+class OrdinaryWithMarker:
+    __slots__ = ("required",)
+    marker: KW_ONLY  # error: [invalid-declaration]
+```
+
 ## Synthesized dataclass slots exclude inherited storage
 
 A slotted dataclass creates descriptors only for fields that do not already have an inherited slot.
