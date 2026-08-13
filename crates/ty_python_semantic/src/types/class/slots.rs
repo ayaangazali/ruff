@@ -67,11 +67,31 @@ impl<'db> SlotDescriptorType<'db> {
     }
 }
 
-/// Whether the instance layout provides ordinary dictionary-backed attribute storage.
+/// Whether instances can store attributes in an ordinary instance dictionary.
+///
+/// Ordinary Python classes provide this storage, while classes that use slots throughout their
+/// inheritance chain can omit it. A slotted class can inherit an instance dictionary from a base
+/// class or request one explicitly:
+///
+/// ```python
+/// class Slotted:
+///     __slots__ = ("value",)
+///
+/// class WithDictionary(Slotted):
+///     __slots__ = ("__dict__",)
+/// ```
+///
+/// This describes `instance.__dict__`, not `Class.__dict__`: the class's own namespace remains
+/// available regardless of its instance layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, get_size2::GetSize, salsa::SalsaValue)]
 enum InstanceDictionary {
+    /// Instances definitely have dictionary-backed attribute storage.
     Present,
+    /// Instances definitely lack dictionary-backed attribute storage.
     Absent,
+    /// A base class or dynamic slot declaration prevents determining the instance layout.
+    ///
+    /// Unknown storage remains permissive when checking attribute access and assignment.
     Unknown,
 }
 
