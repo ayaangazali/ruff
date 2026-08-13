@@ -1739,19 +1739,18 @@ class AnnotatedSlots:
 reveal_type(AnnotatedSlots.__slots__)  # revealed: tuple[Literal["value"]]
 ```
 
-A definition inside a `TYPE_CHECKING` block also does not enter the runtime class namespace.
+Like other class attributes, `__slots__` assignments inside `TYPE_CHECKING` blocks are visible to
+static analysis.
 
 ```py
 from typing import TYPE_CHECKING
 
 @dataclass(slots=True)
-class TypeCheckingSlots:
+class TypeCheckingSlots:  # error: [invalid-dataclass] "Dataclass `TypeCheckingSlots` cannot combine `slots=True` with `__slots__`"
     value: int
 
     if TYPE_CHECKING:
         __slots__ = ("other",)
-
-reveal_type(TypeCheckingSlots.__slots__)  # revealed: tuple[Literal["value"]]
 ```
 
 ### `weakref_slot`

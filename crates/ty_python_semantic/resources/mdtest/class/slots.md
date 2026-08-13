@@ -951,7 +951,8 @@ class DeletedDefault:
     del value
 ```
 
-A class variable defined only for type checking does not enter the runtime class namespace.
+Class assignments inside `TYPE_CHECKING` blocks are visible to static analysis and can conflict with
+slot names.
 
 ```py
 from typing import TYPE_CHECKING
@@ -960,7 +961,5 @@ class TypeCheckingOnly:
     __slots__ = ("value",)
 
     if TYPE_CHECKING:
-        value = 1
-
-reveal_type(TypeCheckingOnly.value)  # revealed: MemberDescriptorType
+        value = 1  # error: [invalid-assignment]
 ```

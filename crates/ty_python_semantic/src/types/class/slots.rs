@@ -1,9 +1,7 @@
 use itertools::Itertools;
 use ruff_db::parsed::parsed_module;
 use ruff_python_ast::{self as ast, PythonVersion, name::Name};
-use ty_python_core::{
-    place_table, scope::ScopeId, semantic_index, symbol::ScopedSymbolId, use_def_map,
-};
+use ty_python_core::{place_table, use_def_map};
 
 use crate::place::{DefinedPlace, Definedness, Place, place_from_bindings};
 use crate::types::class::{CodeGeneratorKind, StaticClassLiteral};
@@ -151,36 +149,23 @@ fn literal_slot_name(expression: &ast::Expr) -> Option<Name> {
         .map(|literal| Name::new(literal.value.to_str()))
 }
 
-/// Whether a class-body binding reaches class creation outside a `TYPE_CHECKING` block.
-#[salsa::tracked(returns(copy), heap_size=ruff_memory_usage::heap_size)]
-fn has_runtime_binding<'db>(db: &'db dyn Db, scope: ScopeId<'db>, symbol: ScopedSymbolId) -> bool {
-    let index = semantic_index(db, scope.program_file(db));
-    let module = parsed_module(db, scope.python_file(db)).load(db);
-
-    use_def_map(db, scope)
-        .end_of_scope_symbol_bindings(symbol)
-        .filter_map(|binding| binding.binding.definition())
-        .any(|definition| {
-            !index.is_in_type_checking_block(
-                scope.file_scope_id(db),
-                definition.kind(db).full_range(&module),
-            )
-        })
-}
-
 #[salsa::tracked]
 impl<'db> StaticClassLiteral<'db> {
     /// Returns whether this class body explicitly defines `__slots__`.
     pub(crate) fn has_explicit_slots(self, db: &'db dyn Db) -> bool {
-        self.has_runtime_class_binding(db, "__slots__")
+        self.has_own_class_binding(db, "__slots__")
     }
 
-    /// Returns whether a name is bound in the runtime class namespace.
-    pub(super) fn has_runtime_class_binding(self, db: &'db dyn Db, name: &str) -> bool {
+    /// Returns whether a binding for this name reaches the end of the class body.
+    pub(super) fn has_own_class_binding(self, db: &'db dyn Db, name: &str) -> bool {
         let scope = self.body_scope(db);
         place_table(db, scope)
             .symbol_id(name)
-            .is_some_and(|symbol| has_runtime_binding(db, scope, symbol))
+            .is_some_and(|symbol| {
+                use_def_map(db, scope)
+                    .end_of_scope_symbol_bindings(symbol)
+                    .any(|binding| binding.binding.definition().is_some())
+            })
     }
 
     /// Returns this class's explicit or generated slot names when they are statically known.
@@ -228,14 +213,13 @@ impl<'db> StaticClassLiteral<'db> {
     )]
     fn slot_definition(self, db: &'db dyn Db) -> SlotDefinition {
         let body_scope = self.body_scope(db);
-        // Only assignments that reach the runtime class namespace define explicit slots:
+        // A bare annotation does not bind `__slots__`, but an annotated assignment does:
         //
-        //     __slots__: tuple[str, ...]  # No runtime assignment.
-        //     if TYPE_CHECKING:
-        //         __slots__ = ("value",)  # Not present at runtime.
+        //     __slots__: tuple[str, ...]
+        //     __slots__: tuple[str, ...] = ("value",)
         let Some(symbol) = place_table(db, body_scope)
             .symbol_id("__slots__")
-            .filter(|symbol| has_runtime_binding(db, body_scope, *symbol))
+            .filter(|_| self.has_explicit_slots(db))
         else {
             if !self.has_generated_slots(db) {
                 return SlotDefinition::Dynamic;

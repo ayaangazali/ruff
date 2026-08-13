@@ -1526,7 +1526,7 @@ impl<'db> StaticClassLiteral<'db> {
                 .slot_names(db)
                 .is_some_and(|slots| slots.iter().any(|slot| slot == name))
             && (self.has_generated_slots(db)
-                || !self.has_runtime_class_binding(db, name)
+                || !self.has_own_class_binding(db, name)
                 || self.file(db).is_stub(db) && self.has_instance_slot(db, name))
         {
             return Member::definitely_declared(self.own_slot_descriptor(
