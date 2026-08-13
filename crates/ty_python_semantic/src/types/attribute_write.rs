@@ -577,13 +577,10 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
-    if let Type::PropertyInstance(property) = attr_ty
-        && property.is_slot_descriptor(db)
-        && property.setter(db).is_some()
-        && let PlaceAndQualifiers {
-            place: Place::Defined(DefinedPlace { ty, .. }),
-            qualifiers: storage_qualifiers,
-        } = object_ty.instance_member(db, env, attribute)
+    if let Some(PlaceAndQualifiers {
+        place: Place::Defined(DefinedPlace { ty, .. }),
+        qualifiers: storage_qualifiers,
+    }) = attr_ty.direct_instance_storage(db, || object_ty.instance_member(db, env, attribute))
     {
         return ExplicitAttributeWriteRequirement::AssignableTo {
             ty: effective_write_type(

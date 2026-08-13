@@ -2091,6 +2091,28 @@ impl<'db> Type<'db> {
             .filter(|descriptor| descriptor.is_property(db))
     }
 
+    /// Whether assigning through this descriptor writes directly to instance storage.
+    ///
+    /// Unlike an arbitrary data descriptor, a writable slot stores the assigned value without
+    /// transforming it. Reads, writes, and assignment narrowing therefore use the receiver's
+    /// ordinary instance member.
+    fn writes_directly_to_instance_storage(self, db: &'db dyn Db) -> bool {
+        self.as_descriptor_instance().is_some_and(|descriptor| {
+            descriptor.is_slot_descriptor(db) && descriptor.setter(db).is_some()
+        })
+    }
+
+    /// Returns the receiver's instance member when this descriptor exposes that storage directly.
+    fn direct_instance_storage(
+        self,
+        db: &'db dyn Db,
+        instance_member: impl FnOnce() -> PlaceAndQualifiers<'db>,
+    ) -> Option<PlaceAndQualifiers<'db>> {
+        self.writes_directly_to_instance_storage(db)
+            .then(instance_member)
+            .filter(|member| !member.place.is_undefined())
+    }
+
     pub const fn as_class_literal(self) -> Option<ClassLiteral<'db>> {
         match self {
             Type::ClassLiteral(class_type) => Some(class_type),
@@ -4355,11 +4377,7 @@ impl<'db> Type<'db> {
         policy: InstanceFallbackShadowsNonDataDescriptor,
     ) -> MemberLookupResult<'db> {
         let meta_attr_plain = Self::instance_lookup_class_member_with_policy(db, env, key);
-        let is_slot_descriptor = meta_attr_plain
-            .place
-            .ignore_possibly_undefined()
-            .and_then(Type::as_descriptor_instance)
-            .is_some_and(|property| property.is_slot_descriptor(db));
+        let meta_attr_ty = meta_attr_plain.place.ignore_possibly_undefined();
         // A TypeVar retains its class identity when lookup is delegated to its bound, including
         // after narrowing. Narrowing can also add an unrelated class to a mixin's `Self`, in which
         // case the TypeVar alone is not a valid owner for descriptors from that class.
@@ -4385,26 +4403,21 @@ impl<'db> Type<'db> {
 
         let meta_attr_error = meta_attr_error.map(MemberLookupErrorKind::DescriptorGet);
         let fallback_error = fallback.err().map(|error| error.kind(db));
+        let fallback_member = fallback.unwrap_or_else(|error| error.fallback_member(db));
+        let direct_instance_storage = meta_attr_ty
+            .and_then(|descriptor| descriptor.direct_instance_storage(db, || fallback_member));
         let PlaceAndQualifiers {
             place: fallback,
             qualifiers: fallback_qualifiers,
-        } = fallback.unwrap_or_else(|error| error.fallback_member(db));
+        } = fallback_member;
 
         // A slot stores the same instance attribute described by the receiver's declarations.
         // Unlike an arbitrary data descriptor, its inherited getter must not hide a more precise
         // declaration established by the receiver's class.
-        if is_slot_descriptor
-            && matches!(meta_attr, Place::Defined(_))
-            && let fallback @ Place::Defined(DefinedPlace {
-                ty: fallback_ty, ..
-            }) = fallback
-            && !fallback_ty.is_unknown()
+        if matches!(meta_attr, Place::Defined(_))
+            && let Some(storage) = direct_instance_storage
         {
-            return member_lookup_result(
-                db,
-                fallback.with_qualifiers(fallback_qualifiers),
-                fallback_error,
-            );
+            return member_lookup_result(db, storage, fallback_error);
         }
 
         match (meta_attr, meta_attr_kind, fallback) {

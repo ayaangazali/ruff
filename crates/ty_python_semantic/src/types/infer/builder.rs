@@ -12301,7 +12301,7 @@ impl<'db, 'ast> AddBinding<'db, 'ast> {
                 .and_then(|member| member.place.ignore_possibly_undefined())
                 .is_some_and(|ty| {
                     ty.may_be_data_descriptor(db, env)
-                        && !matches!(ty, Type::PropertyInstance(property) if property.is_slot_descriptor(db))
+                        && !ty.writes_directly_to_instance_storage(db)
                 })
             {
                 builder.discard_dict_key_assignments_for(self.binding);
