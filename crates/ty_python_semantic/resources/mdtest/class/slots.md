@@ -689,6 +689,33 @@ class SlottedString(str):
 SlottedString("value").__dict__  # error: [unresolved-attribute]
 ```
 
+## Built-in bases with instance dictionaries
+
+`staticmethod` instances have dictionaries, so a slotted subclass can still create additional
+attributes.
+
+```py
+from typing import Any
+
+class SlottedStaticMethod(staticmethod[..., Any]):
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        super().__init__(lambda: 1)
+        self.extra = 1
+```
+
+`classmethod` instances also have dictionaries.
+
+```py
+class SlottedClassMethod(classmethod[Any, ..., Any]):
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        super().__init__(lambda cls: 1)
+        self.extra = 1
+```
+
 ## Descriptor setters do not require instance dictionaries
 
 A data descriptor can accept assignments even when its owning instance has no dictionary.

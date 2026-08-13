@@ -258,8 +258,6 @@ impl InstanceDictionary {
             | KnownClass::Property
             | KnownClass::MemberDescriptorType
             | KnownClass::GetSetDescriptorType
-            | KnownClass::Staticmethod
-            | KnownClass::Classmethod
             | KnownClass::Super
             | KnownClass::Sequence
             | KnownClass::Iterable
@@ -272,7 +270,9 @@ impl InstanceDictionary {
             | KnownClass::Exception
             | KnownClass::Warning
             | KnownClass::BaseExceptionGroup
-            | KnownClass::ExceptionGroup => Self::Present,
+            | KnownClass::ExceptionGroup
+            | KnownClass::Staticmethod
+            | KnownClass::Classmethod => Self::Present,
             _ => Self::Unknown,
         }
     }
