@@ -563,6 +563,9 @@ fn possible_class_attribute_descriptor<'db>(
 
 /// Convert an explicitly resolved member into either a descriptor call or a direct type check.
 ///
+/// A slot descriptor writes directly to instance storage, so the receiver's instance declaration
+/// determines its write type even when a subclass overrides the slot owner's annotation.
+///
 /// Descriptor behavior is used only when `__set__` is found with
 /// [`MemberLookupPolicy::REQUIRE_CONCRETE`]. An `Any` or `Unknown` base therefore does not cause an
 /// ordinary attribute to be treated as a data descriptor.
@@ -574,6 +577,26 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
+    if let Type::PropertyInstance(property) = attr_ty
+        && property.is_slot_descriptor(db)
+        && property.setter(db).is_some()
+        && let PlaceAndQualifiers {
+            place: Place::Defined(DefinedPlace { ty, .. }),
+            qualifiers: storage_qualifiers,
+        } = object_ty.instance_member(db, env, attribute)
+    {
+        return ExplicitAttributeWriteRequirement::AssignableTo {
+            ty: effective_write_type(
+                db,
+                env,
+                object_ty,
+                attribute,
+                ty.bind_self_typevars(db, env, object_ty),
+            ),
+            qualifiers: qualifiers.union(storage_qualifiers),
+        };
+    }
+
     if let Place::Defined(DefinedPlace { ty: setter_ty, .. }) = attr_ty
         .class_member_with_policy(db, env, "__set__", MemberLookupPolicy::REQUIRE_CONCRETE)
         .place

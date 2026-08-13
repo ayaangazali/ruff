@@ -383,6 +383,58 @@ reveal_type(IntegerImplementation().value)  # revealed: int
 IntegerImplementation().value = "wrong"  # error: [invalid-assignment]
 ```
 
+## Subclass declarations refine inherited slots
+
+A subclass can narrow an inherited attribute declaration even when its storage remains in a base
+class's slot. Reads and writes use the subclass's declared type, as they do without slots.
+
+```py
+class Base:
+    __slots__ = ("value",)
+    value: int | None
+
+class Child(Base):
+    __slots__ = ()
+    value: int
+
+    def __init__(self) -> None:
+        self.value = 1
+
+    def get(self) -> int:
+        return self.value
+
+reveal_type(Child().value)  # revealed: int
+Child().value = 2
+Child().value = None  # error: [invalid-assignment]
+```
+
+An annotation on an assignment in the subclass's initializer establishes the same narrower contract.
+
+```py
+class InitializedChild(Base):
+    def __init__(self) -> None:
+        self.value: int = 1
+
+    def get(self) -> int:
+        return self.value
+
+reveal_type(InitializedChild().value)  # revealed: int
+InitializedChild().value = None  # error: [invalid-assignment]
+```
+
+As with an ordinary instance attribute, an overriding declaration replaces the inherited contract
+rather than requiring assigned values to satisfy both declarations.
+
+```py
+class StringChild(Base):
+    def __init__(self) -> None:
+        self.value: str = "valid"
+
+reveal_type(StringChild().value)  # revealed: str
+StringChild().value = "updated"
+StringChild().value = 1  # error: [invalid-assignment]
+```
+
 ## Inherited unknown declarations
 
 Handling an unannotated slot must not change the precedence of an unrelated inherited instance

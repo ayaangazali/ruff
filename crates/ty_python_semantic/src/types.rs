@@ -4372,11 +4372,11 @@ impl<'db> Type<'db> {
             qualifiers: fallback_qualifiers,
         } = fallback.unwrap_or_else(|error| error.fallback_member(db));
 
-        // An unannotated inherited slot can be initialized with a more precise type by the
-        // receiver's class. Ordinary data descriptors do not have this storage relationship.
+        // A slot stores the same instance attribute described by the receiver's declarations.
+        // Unlike an arbitrary data descriptor, its inherited getter must not hide a more precise
+        // declaration established by the receiver's class.
         if is_slot_descriptor
-            && let Place::Defined(DefinedPlace { ty, .. }) = meta_attr
-            && ty.is_unknown()
+            && matches!(meta_attr, Place::Defined(_))
             && let fallback @ Place::Defined(DefinedPlace {
                 ty: fallback_ty, ..
             }) = fallback
