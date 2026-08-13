@@ -4239,7 +4239,7 @@ impl<'db> StaticClassLiteral<'db> {
                         )
                         // We don't allow mutation of methods or properties
                         || ty.is_function_literal()
-                        || ty.is_property_instance()
+                        || ty.is_property_instance(db)
                         // Underscore-prefixed attributes are assumed not to be externally mutated
                         || name.starts_with('_')
                     {

@@ -721,14 +721,16 @@ pub(super) fn property_setter_returns_never<'db>(
     object_ty: Type<'db>,
     value_ty: Type<'db>,
 ) -> bool {
-    property_ty.as_property_instance().is_some_and(|property| {
-        property.setter(db).is_some_and(|setter| {
-            match setter.try_call(db, env, &CallArguments::positional([object_ty, value_ty])) {
-                Ok(result) => result.return_type(db, env).is_never(),
-                Err(error) => error.return_type(db, env).is_never(),
-            }
+    property_ty
+        .as_property_instance(db)
+        .is_some_and(|property| {
+            property.setter(db).is_some_and(|setter| {
+                match setter.try_call(db, env, &CallArguments::positional([object_ty, value_ty])) {
+                    Ok(result) => result.return_type(db, env).is_never(),
+                    Err(error) => error.return_type(db, env).is_never(),
+                }
+            })
         })
-    })
 }
 
 /// Resolve class-object members when a class attribute can shadow its metaclass member.

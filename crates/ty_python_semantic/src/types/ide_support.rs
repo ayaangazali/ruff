@@ -526,7 +526,7 @@ impl<'db> ImplementationsFinder<'db> {
         let containing_scope = function_definition.scope(db);
         let accessor_role = function
             .inferred_type(model)
-            .and_then(Type::as_property_instance)
+            .and_then(|ty| ty.as_property_instance(db))
             .and_then(|property| property.accessor_role(db, function_definition));
         let class_node = containing_scope.node(db).as_class()?;
         let class_definition = semantic_index(db, containing_scope.program_file(db))
@@ -932,7 +932,7 @@ fn property_accessor_role_matches<'db>(
 
     requested_role.is_none_or(|requested_role| {
         binding_type(db, definition)
-            .as_property_instance()
+            .as_property_instance(db)
             .and_then(|property| property.accessor_role(db, definition))
             .is_none_or(|definition_role| definition_role == requested_role)
     })

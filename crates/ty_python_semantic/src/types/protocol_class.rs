@@ -2691,7 +2691,7 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                 setter_ty,
                 ..
             } => {
-                if let Some(property) = descriptor_ty.as_property_instance()
+                if let Some(property) = descriptor_ty.as_property_instance(db)
                     && let Some(set_type) = property_set_type(db, self.env, property, object_ty)
                 {
                     return self.check_type_pair(db, value_ty, set_type);

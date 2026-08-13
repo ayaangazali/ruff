@@ -1085,6 +1085,14 @@ impl<'db> PropertyInstanceType<'db> {
         )
     }
 
+    /// Whether this descriptor is a Python property rather than an instance slot.
+    fn is_property(self, db: &'db dyn Db) -> bool {
+        matches!(
+            self.instance_class(db),
+            KnownClass::Property | KnownClass::EnumProperty
+        )
+    }
+
     fn instance_fallback(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>) -> Type<'db> {
         self.instance_class(db).to_instance(db, env)
     }
@@ -2069,11 +2077,18 @@ impl<'db> Type<'db> {
         }
     }
 
-    pub const fn as_property_instance(self) -> Option<PropertyInstanceType<'db>> {
+    /// Returns any descriptor represented by specialized property-style accessors.
+    const fn as_descriptor_instance(self) -> Option<PropertyInstanceType<'db>> {
         match self {
             Type::PropertyInstance(property) => Some(property),
             _ => None,
         }
+    }
+
+    /// Returns an actual Python property, excluding slot descriptors.
+    pub fn as_property_instance(self, db: &'db dyn Db) -> Option<PropertyInstanceType<'db>> {
+        self.as_descriptor_instance()
+            .filter(|descriptor| descriptor.is_property(db))
     }
 
     pub const fn as_class_literal(self) -> Option<ClassLiteral<'db>> {
@@ -2203,8 +2218,8 @@ impl<'db> Type<'db> {
         }
     }
 
-    const fn is_property_instance(&self) -> bool {
-        matches!(self, Type::PropertyInstance(..))
+    fn is_property_instance(self, db: &'db dyn Db) -> bool {
+        self.as_property_instance(db).is_some()
     }
 
     pub(crate) fn module_literal(
@@ -3395,7 +3410,7 @@ impl<'db> Type<'db> {
             && class_attr
                 .place
                 .ignore_possibly_undefined()
-                .and_then(Type::as_property_instance)
+                .and_then(Type::as_descriptor_instance)
                 .is_some_and(|property| property.is_slot_descriptor(db))
         {
             KnownClass::Object
@@ -4343,7 +4358,7 @@ impl<'db> Type<'db> {
         let is_slot_descriptor = meta_attr_plain
             .place
             .ignore_possibly_undefined()
-            .and_then(Type::as_property_instance)
+            .and_then(Type::as_descriptor_instance)
             .is_some_and(|property| property.is_slot_descriptor(db));
         // A TypeVar retains its class identity when lookup is delegated to its bound, including
         // after narrowing. Narrowing can also add an unrelated class to a mixin's `Self`, in which
@@ -4989,19 +5004,13 @@ impl<'db> Type<'db> {
                     Place::bound(Type::int_literal(segment.into())).into()
                 }
 
-                Type::PropertyInstance(property)
-                    if name == "fget" && !property.is_slot_descriptor(db) =>
-                {
+                Type::PropertyInstance(property) if name == "fget" && property.is_property(db) => {
                     Place::bound(property.getter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property)
-                    if name == "fset" && !property.is_slot_descriptor(db) =>
-                {
+                Type::PropertyInstance(property) if name == "fset" && property.is_property(db) => {
                     Place::bound(property.setter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property)
-                    if name == "fdel" && !property.is_slot_descriptor(db) =>
-                {
+                Type::PropertyInstance(property) if name == "fdel" && property.is_property(db) => {
                     Place::bound(property.deleter(db).unwrap_or(Type::none(db, env))).into()
                 }
 
