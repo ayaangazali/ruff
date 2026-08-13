@@ -70,6 +70,7 @@ mod dynamic_literal;
 mod enum_literal;
 mod known;
 mod named_tuple;
+mod slots;
 mod static_literal;
 mod typed_dict;
 
