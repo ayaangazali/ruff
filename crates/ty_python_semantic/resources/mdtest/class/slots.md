@@ -346,6 +346,43 @@ reveal_type(Child().base_value)  # revealed: int
 reveal_type(Child().child_value)  # revealed: int
 ```
 
+## Slots inherit attribute declarations from their bases
+
+A subclass can introduce storage for an instance attribute that a slotted base only declares. The
+inherited annotation still controls both the value returned by the slot and the values it accepts.
+
+```py
+class Contract:
+    __slots__ = ()
+    value: int
+
+class Implementation(Contract):
+    __slots__ = ("value",)
+
+item = Implementation()
+reveal_type(item.value)  # revealed: int
+item.value = 1
+item.value = "wrong"  # error: [invalid-assignment]
+```
+
+An inherited generic declaration is specialized using the subclass's base type.
+
+```py
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+class GenericContract(Generic[T]):
+    __slots__ = ()
+    value: T
+
+class IntegerImplementation(GenericContract[int]):
+    __slots__ = ("value",)
+
+reveal_type(IntegerImplementation().value)  # revealed: int
+IntegerImplementation().value = "wrong"  # error: [invalid-assignment]
+```
+
 ## Inherited unknown declarations
 
 Handling an unannotated slot must not change the precedence of an unrelated inherited instance
