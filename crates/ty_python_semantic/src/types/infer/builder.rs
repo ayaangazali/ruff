@@ -12292,11 +12292,15 @@ impl<'db, 'ast> AddBinding<'db, 'ast> {
             let value_ty = builder.try_expression_type(value).unwrap_or_else(|| {
                 builder.infer_maybe_standalone_expression(value, TypeContext::default())
             });
-            // If the member is a data descriptor, the RHS value may differ from the value actually assigned.
+            // Arbitrary data descriptors can transform the assigned value, but slot descriptors
+            // write it directly into instance storage.
             if assignment_attribute_members(db, env, value_ty, &attr.id)
                 .and_then(AssignmentAttributeMembers::type_member)
                 .and_then(|member| member.place.ignore_possibly_undefined())
-                .is_some_and(|ty| ty.may_be_data_descriptor(db, env))
+                .is_some_and(|ty| {
+                    ty.may_be_data_descriptor(db, env)
+                        && !matches!(ty, Type::PropertyInstance(property) if property.is_slot_descriptor(db))
+                })
             {
                 builder.discard_dict_key_assignments_for(self.binding);
                 bound_ty = declared_ty;

@@ -77,6 +77,59 @@ class Slotted:
 reveal_type(Slotted(1).value)  # revealed: int
 ```
 
+## Slot assignments preserve flow-sensitive narrowing
+
+Writing a value directly into an annotated slot narrows later reads without changing which values
+the slot accepts.
+
+```py
+class Slotted:
+    __slots__ = ("value",)
+
+    def __init__(self) -> None:
+        self.value: int | None = None
+
+    def assign(self) -> int:
+        self.value = 1
+        reveal_type(self.value)  # revealed: Literal[1]
+        return self.value
+
+    def initialize(self) -> int:
+        if self.value is None:
+            self.value = 1
+        reveal_type(self.value)  # revealed: int
+        return self.value
+
+    def reject(self) -> None:
+        self.value = "wrong"  # error: [invalid-assignment]
+
+class ClassAnnotated:
+    __slots__ = ("value",)
+    value: int | None
+
+    def assign(self) -> int:
+        self.value = 1
+        reveal_type(self.value)  # revealed: Literal[1]
+        return self.value
+```
+
+An arbitrary data descriptor can transform an assigned value, so it does not receive the same
+storage-specific narrowing.
+
+```py
+class TransformingDescriptor:
+    def __get__(self, instance: object, owner: type | None = None) -> int | None: ...
+    def __set__(self, instance: object, value: int) -> None: ...
+
+class DescriptorOwner:
+    __slots__ = ()
+    value = TransformingDescriptor()
+
+def inspect_descriptor(owner: DescriptorOwner) -> None:
+    owner.value = 1
+    reveal_type(owner.value)  # revealed: int | None
+```
+
 ## Annotated slots enforce their declared types
 
 An annotation on a slot controls both attribute reads and assignments.
