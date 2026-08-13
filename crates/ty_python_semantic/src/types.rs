@@ -999,7 +999,7 @@ pub enum PropertyAccessorRole {
     Deleter,
 }
 
-/// Represents an instance of `builtins.property` or `enum.property`.
+/// Models a property-like descriptor, including synthesized descriptors for instance slots.
 #[salsa::interned(debug, constructor=new_internal, heap_size=ruff_memory_usage::heap_size)]
 pub struct PropertyInstanceType<'db> {
     #[returns(copy)]
@@ -1010,6 +1010,9 @@ pub struct PropertyInstanceType<'db> {
     pub deleter: Option<Type<'db>>,
     #[returns(copy)]
     instance_class: KnownClass,
+    /// Slots can acquire a more precise inferred value from assignments in a subclass.
+    #[returns(copy)]
+    is_slot_descriptor: bool,
 }
 
 fn walk_property_instance_type<'db, V: visitor::TypeVisitor<'db> + ?Sized>(
@@ -1038,7 +1041,24 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(db, getter, setter, deleter, KnownClass::Property)
+        Self::new_internal(db, getter, setter, deleter, KnownClass::Property, false)
+    }
+
+    /// Model a runtime slot descriptor through the existing typed accessor machinery.
+    fn new_slot(
+        db: &'db dyn Db,
+        getter: Type<'db>,
+        setter: Option<Type<'db>>,
+        deleter: Option<Type<'db>>,
+    ) -> Self {
+        Self::new_internal(
+            db,
+            Some(getter),
+            setter,
+            deleter,
+            KnownClass::Property,
+            true,
+        )
     }
 
     fn new_enum_property(
@@ -1047,7 +1067,7 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(db, getter, setter, deleter, KnownClass::EnumProperty)
+        Self::new_internal(db, getter, setter, deleter, KnownClass::EnumProperty, false)
     }
 
     fn with_accessors(
@@ -1057,7 +1077,14 @@ impl<'db> PropertyInstanceType<'db> {
         setter: Option<Type<'db>>,
         deleter: Option<Type<'db>>,
     ) -> Self {
-        Self::new_internal(db, getter, setter, deleter, self.instance_class(db))
+        Self::new_internal(
+            db,
+            getter,
+            setter,
+            deleter,
+            self.instance_class(db),
+            self.is_slot_descriptor(db),
+        )
     }
 
     fn instance_fallback(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>) -> Type<'db> {
@@ -4295,6 +4322,11 @@ impl<'db> Type<'db> {
         policy: InstanceFallbackShadowsNonDataDescriptor,
     ) -> MemberLookupResult<'db> {
         let meta_attr_plain = Self::instance_lookup_class_member_with_policy(db, env, key);
+        let is_slot_descriptor = meta_attr_plain
+            .place
+            .ignore_possibly_undefined()
+            .and_then(Type::as_property_instance)
+            .is_some_and(|property| property.is_slot_descriptor(db));
         // A TypeVar retains its class identity when lookup is delegated to its bound, including
         // after narrowing. Narrowing can also add an unrelated class to a mixin's `Self`, in which
         // case the TypeVar alone is not a valid owner for descriptors from that class.
@@ -4324,6 +4356,23 @@ impl<'db> Type<'db> {
             place: fallback,
             qualifiers: fallback_qualifiers,
         } = fallback.unwrap_or_else(|error| error.fallback_member(db));
+
+        // An unannotated inherited slot can be initialized with a more precise type by the
+        // receiver's class. Ordinary data descriptors do not have this storage relationship.
+        if is_slot_descriptor
+            && let Place::Defined(DefinedPlace { ty, .. }) = meta_attr
+            && ty.is_unknown()
+            && let fallback @ Place::Defined(DefinedPlace {
+                ty: fallback_ty, ..
+            }) = fallback
+            && !fallback_ty.is_unknown()
+        {
+            return member_lookup_result(
+                db,
+                fallback.with_qualifiers(fallback_qualifiers),
+                fallback_error,
+            );
+        }
 
         match (meta_attr, meta_attr_kind, fallback) {
             // The fallback type is unbound, so we can just return `meta_attr` unconditionally,
@@ -4590,7 +4639,7 @@ impl<'db> Type<'db> {
 
                 let fallback = this.instance_member(db, env, name_str);
 
-                let result = Type::invoke_descriptor_protocol(
+                let mut result = Type::invoke_descriptor_protocol(
                     db,
                     env,
                     key,
@@ -4598,6 +4647,25 @@ impl<'db> Type<'db> {
                     fallback.into(),
                     InstanceFallbackShadowsNonDataDescriptor::No,
                 );
+
+                if name_str == "__dict__"
+                    && let Some((class, _)) = this
+                        .nominal_class(db, env)
+                        .and_then(|class| class.static_class_literal(db))
+                    && class.slot_names(db).is_some()
+                    && !class.has_instance_dictionary(db)
+                    && this
+                        .class_member_with_policy(
+                            db,
+                            env,
+                            name_str,
+                            MemberLookupPolicy::MRO_NO_OBJECT_FALLBACK,
+                        )
+                        .place
+                        .is_undefined()
+                {
+                    result = Place::Undefined.into();
+                }
 
                 if result
                     .unwrap_or_else(|error| error.fallback_member(db))

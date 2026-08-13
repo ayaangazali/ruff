@@ -66,9 +66,10 @@ class D(A, B, C): ...
 
 ## Known problems
 
-Classes that have "dynamic" definitions of `__slots__` (definitions do not consist
-of string literals, or tuples of string literals) are not currently considered disjoint
-bases by ty.
+Classes whose slot names cannot be determined statically are not currently considered
+disjoint bases by ty. Static definitions can include string literals and literal tuples,
+lists, sets, or dictionaries of string literals, as long as a mutable container is not
+subsequently observed or modified in the class body.
 
 Additionally, this check is not exhaustive: many C extensions (including several in
 the standard library) define classes that use extended memory layouts and thus cannot

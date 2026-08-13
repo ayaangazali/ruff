@@ -375,19 +375,39 @@ fn instance_attribute_write_member_requirement<'db>(
         PlaceAndQualifiers {
             place: Place::Defined(DefinedPlace { ty, .. }),
             qualifiers,
-        } => InstanceAttributeWriteMember::Explicit {
-            member: explicit_attribute_write_requirement(
+        } => {
+            let member = explicit_attribute_write_requirement(
                 db,
                 env,
                 object_ty,
                 attribute,
                 ty.bind_self_typevars(db, env, object_ty),
                 qualifiers,
-            ),
-            fallback: receiver_fallback.map(|fallback| {
-                instance_fallback_write_requirement(db, env, object_ty, attribute, fallback)
-            }),
-        },
+            );
+
+            if matches!(
+                member,
+                ExplicitAttributeWriteRequirement::AssignableTo { .. }
+            ) && ty.is_definitely_non_data_descriptor(db, env)
+                && let Some((class, _)) = object_ty
+                    .nominal_class(db, env)
+                    .and_then(|class| class.static_class_literal(db))
+                && !class.has_instance_dictionary(db)
+                && object_ty
+                    .instance_member(db, env, attribute)
+                    .place
+                    .is_undefined()
+            {
+                return InstanceAttributeWriteMember::SetAttr;
+            }
+
+            InstanceAttributeWriteMember::Explicit {
+                member,
+                fallback: receiver_fallback.map(|fallback| {
+                    instance_fallback_write_requirement(db, env, object_ty, attribute, fallback)
+                }),
+            }
+        }
         PlaceAndQualifiers {
             place: Place::Undefined,
             ..

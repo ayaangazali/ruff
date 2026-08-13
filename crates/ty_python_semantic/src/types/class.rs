@@ -3366,12 +3366,18 @@ enum SlotsKind {
     NotEmpty,
     /// `__slots__` is defined but its value is dynamic:
     /// * `__slots__ = tuple(a for a in b)`
-    /// * `__slots__ = ["a", "b"]`
     Dynamic,
 }
 
 impl SlotsKind {
     fn from(db: &dyn Db, base: StaticClassLiteral) -> Self {
+        match base.slot_names(db) {
+            Some([]) => return Self::Empty,
+            Some(_) => return Self::NotEmpty,
+            None if base.has_explicit_slots(db) => return Self::Dynamic,
+            None => {}
+        }
+
         let env = ProgramEnvironment::from_scope(base.body_scope(db));
         let Place::Defined(DefinedPlace {
             ty: slots_ty,
