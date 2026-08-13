@@ -390,6 +390,6 @@ impl<'db> StaticClassLiteral<'db> {
         name: &str,
         binding: Place<'db>,
     ) -> bool {
-        !binding.is_undefined() && !(self.file(db).is_stub(db) && self.has_instance_slot(db, name))
+        !(binding.is_undefined() || self.file(db).is_stub(db) && self.has_instance_slot(db, name))
     }
 }
