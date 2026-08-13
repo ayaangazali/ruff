@@ -38,7 +38,7 @@ use crate::{
         class::{
             ClassInstanceFlags, ClassMemberResult, CodeGeneratorKind, DisjointBase,
             DynamicTypedDictLiteral, Field, FieldKind, InstanceMemberResult, MetaclassError,
-            MetaclassErrorKind, MethodDecorator, MroLookup, NamedTupleField, SlotsKind,
+            MetaclassErrorKind, MethodDecorator, MroLookup, NamedTupleField,
             synthesize_namedtuple_class_member,
             typed_dict::{TypedDictFields, synthesize_typed_dict_method, typed_dict_class_member},
         },
@@ -309,13 +309,15 @@ fn literal_slot_name(expression: &ast::Expr) -> Option<Name> {
         .map(|literal| Name::new(literal.value.to_str()))
 }
 
-fn literal_slot_names<'ast>(
-    expressions: impl Iterator<Item = &'ast ast::Expr>,
-) -> Option<Box<[Name]>> {
-    expressions.map(literal_slot_name).collect()
-}
-
-/// Determine whether subsequent class-body statements can observe or mutate a slots container.
+/// Checks whether a mutable slots container escapes its original class-body assignment.
+///
+/// A later reference can mutate the container before the class is created:
+///
+/// ```python
+/// class Example:
+///     __slots__ = ["value"]
+///     __slots__.append("extra")
+/// ```
 fn slots_referenced_after_assignment(statements: &[ast::Stmt]) -> bool {
     struct SlotReferenceVisitor {
         found: bool,
@@ -339,14 +341,10 @@ fn slots_referenced_after_assignment(statements: &[ast::Stmt]) -> bool {
     }
 
     let mut visitor = SlotReferenceVisitor { found: false };
-    for statement in statements {
+    statements.iter().any(|statement| {
         visitor.visit_stmt(statement);
-        if visitor.found {
-            return true;
-        }
-    }
-
-    false
+        visitor.found
+    })
 }
 
 #[salsa::tracked]
@@ -367,7 +365,10 @@ impl<'db> StaticClassLiteral<'db> {
             .is_some()
     }
 
-    /// Returns the slot names declared directly on this class, when statically known.
+    /// Returns this class's explicit or generated slot names when they are statically known.
+    ///
+    /// Inherited slots are excluded; callers that need the complete layout should use
+    /// [`Self::has_instance_slot`]. A dynamic declaration returns `None` rather than guessing.
     pub(crate) fn slot_names(self, db: &'db dyn Db) -> Option<&'db [Name]> {
         if !self.has_explicit_slots(db) && !self.has_generated_slots(db) {
             return None;
@@ -388,6 +389,10 @@ impl<'db> StaticClassLiteral<'db> {
         })
     }
 
+    /// Resolves explicit slot declarations and fields synthesized by slotted dataclasses.
+    ///
+    /// Tuple and string values retain their inferred literal types; mutable list, set, and
+    /// dictionary literals are inspected directly and become dynamic if referenced again.
     #[salsa::tracked(
         returns(ref),
         cycle_initial=|_, _, _| SlotDefinition::Dynamic,
@@ -489,8 +494,8 @@ impl<'db> StaticClassLiteral<'db> {
         }
 
         let names = match value {
-            ast::Expr::List(list) => literal_slot_names(list.elts.iter()),
-            ast::Expr::Set(set) => literal_slot_names(set.elts.iter()),
+            ast::Expr::List(list) => list.elts.iter().map(literal_slot_name).collect(),
+            ast::Expr::Set(set) => set.elts.iter().map(literal_slot_name).collect(),
             ast::Expr::Dict(dictionary) => dictionary
                 .items
                 .iter()
@@ -502,7 +507,17 @@ impl<'db> StaticClassLiteral<'db> {
         names.map_or(SlotDefinition::Dynamic, SlotDefinition::Names)
     }
 
-    /// Collect the instance storage contributed by every class in the inheritance hierarchy.
+    /// Collects slot storage and instance-dictionary availability across the complete MRO.
+    ///
+    /// ```python
+    /// class Base:
+    ///     __slots__ = ("value",)
+    ///
+    /// class Child(Base):
+    ///     __slots__ = ("other", "__dict__")
+    /// ```
+    ///
+    /// Here, `Child` has both slots and can also store additional dictionary-backed attributes.
     #[salsa::tracked(
         returns(ref),
         cycle_initial=|_, _, _| InstanceLayout::unknown(),
@@ -999,7 +1014,7 @@ impl<'db> StaticClassLiteral<'db> {
             && !self.is_protocol(db)
         {
             Some(DisjointBase::due_to_decorator(self))
-        } else if SlotsKind::from(db, self) == SlotsKind::NotEmpty {
+        } else if self.slot_names(db).is_some_and(|slots| !slots.is_empty()) {
             Some(DisjointBase::due_to_dunder_slots(ClassLiteral::Static(
                 self,
             )))
@@ -1750,7 +1765,15 @@ impl<'db> StaticClassLiteral<'db> {
         member
     }
 
-    /// Synthesize the writable class descriptor created for an instance slot.
+    /// Synthesizes the class descriptor created for an instance slot.
+    ///
+    /// ```python
+    /// class Example:
+    ///     __slots__ = ("value", "__weakref__")
+    /// ```
+    ///
+    /// Ordinary slots use writable `MemberDescriptorType` descriptors. The special dictionary and
+    /// weak-reference slots use `GetSetDescriptorType`, and the weak-reference slot is read-only.
     fn own_slot_descriptor(
         self,
         db: &'db dyn Db,

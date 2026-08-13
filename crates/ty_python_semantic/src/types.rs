@@ -1044,7 +1044,10 @@ impl<'db> PropertyInstanceType<'db> {
         Self::new_internal(db, getter, setter, deleter, KnownClass::Property)
     }
 
-    /// Model a runtime slot descriptor through the existing typed accessor machinery.
+    /// Models slot accessors while preserving their actual runtime descriptor class.
+    ///
+    /// Slot descriptors share property's getter, setter, and deleter machinery, but must remain
+    /// `MemberDescriptorType` or `GetSetDescriptorType` rather than becoming `property` instances.
     fn new_slot(
         db: &'db dyn Db,
         instance_class: KnownClass,

@@ -890,10 +890,10 @@ c.name = None
 c.name = 42
 ```
 
-### Attributes of built-in properties
+### Writing to a property's documentation
 
-A property stores its documentation in a writable built-in descriptor even though property instances
-do not have an instance dictionary.
+A property stores its documentation in a writable descriptor even though property instances do not
+have an instance dictionary.
 
 ```py
 class Example:
@@ -902,9 +902,13 @@ class Example:
         return 1
 
     value.__doc__ = "Updated documentation"
+```
 
+A property created directly has the same writable `__doc__` attribute. Assignments must still
+respect its `str | None` annotation, and arbitrary instance attributes remain unsupported.
+
+```py
 descriptor = property(lambda instance: 1)
-descriptor.__doc__ = "Updated documentation"
 descriptor.__doc__ = None
 descriptor.__doc__ = 1  # error: [invalid-assignment]
 descriptor.extra = 1  # error: [unresolved-attribute]

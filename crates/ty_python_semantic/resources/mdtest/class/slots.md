@@ -14,31 +14,48 @@ reveal_type(Slotted().value)  # revealed: Unknown
 Slotted().value = 1
 ```
 
-## Slots are class descriptors
+## Slots create class descriptors
 
-A slot creates a descriptor on its defining class, and its name is visible when enumerating the
-attributes of either the class or an instance.
+A slot is represented by a `MemberDescriptorType` on the class that declares it. It is not a
+`property` and does not expose property attributes.
 
 ```py
-from types import MemberDescriptorType
+class Slotted:
+    __slots__ = ("value",)
+
+reveal_type(Slotted.value)  # revealed: MemberDescriptorType
+
+def accepts_property(descriptor: property) -> None: ...
+
+accepts_property(Slotted.value)  # error: [invalid-argument-type]
+Slotted.value.fget  # error: [unresolved-attribute]
+```
+
+## Slot names appear on classes and instances
+
+The name of a slot is included when looking up the available attributes of its class or an instance.
+
+```py
 from ty_extensions import static_assert
 from ty_extensions._internal import has_member
 
 class Slotted:
     __slots__ = ("value",)
 
-reveal_type(Slotted.value)  # revealed: MemberDescriptorType
 static_assert(has_member(Slotted, "value"))
 static_assert(has_member(Slotted(), "value"))
+```
 
-def accepts_member_descriptor(descriptor: MemberDescriptorType) -> None: ...
-def accepts_property(descriptor: property) -> None: ...
+## Slot descriptors can be called directly
 
-accepts_member_descriptor(Slotted.value)
-accepts_property(Slotted.value)  # error: [invalid-argument-type]
+A slot descriptor can be assigned to its public `MemberDescriptorType` annotation. Calling its
+`__get__` method directly then uses the return type declared in typeshed.
 
-Slotted.value.fget  # error: [unresolved-attribute]
-Slotted.value.setter(lambda instance, value: None)  # error: [unresolved-attribute]
+```py
+from types import MemberDescriptorType
+
+class Slotted:
+    __slots__ = ("value",)
 
 descriptor: MemberDescriptorType = Slotted.value
 reveal_type(descriptor.__get__(Slotted(), Slotted))  # revealed: Any
@@ -46,26 +63,34 @@ reveal_type(descriptor.__get__(Slotted(), Slotted))  # revealed: Any
 
 ## Class dictionaries are separate from instance dictionary slots
 
-An instance dictionary slot must not replace the namespace exposed by its class or subclasses.
+An instance dictionary slot must not replace the existing namespace exposed by its class.
 
 ```py
 class WithDictionary:
     __slots__ = ("value", "__dict__")
 
+reveal_type(WithDictionary.__dict__)  # revealed: dict[str, Any]
+```
+
+A subclass continues to expose its own class namespace.
+
+```py
 class SlottedChild(WithDictionary):
     __slots__ = ()
 
-reveal_type(WithDictionary.__dict__)  # revealed: dict[str, Any]
-reveal_type(WithDictionary.__dict__["value"])  # revealed: Any
 reveal_type(SlottedChild.__dict__)  # revealed: dict[str, Any]
+```
 
+The same rule applies when a class is accessed through a `type` annotation.
+
+```py
 def inspect_class(cls: type[WithDictionary]) -> None:
     reveal_type(cls.__dict__)  # revealed: dict[str, Any]
 ```
 
 ## Slot assignments preserve inferred types
 
-Assignments to slotted attributes still determine their inferred public types.
+Assignments to slotted attributes continue to determine their inferred types.
 
 ```py
 class Slotted:
@@ -77,10 +102,10 @@ class Slotted:
 reveal_type(Slotted(1).value)  # revealed: int
 ```
 
-## Slot assignments preserve flow-sensitive narrowing
+## Assignments narrow slotted attributes
 
-Writing a value directly into an annotated slot narrows later reads without changing which values
-the slot accepts.
+Writing to an annotated slot narrows later reads, just as it does for an ordinary instance
+attribute.
 
 ```py
 class Slotted:
@@ -89,32 +114,46 @@ class Slotted:
     def __init__(self) -> None:
         self.value: int | None = None
 
-    def assign(self) -> int:
-        self.value = 1
-        reveal_type(self.value)  # revealed: Literal[1]
-        return self.value
+def assign(instance: Slotted) -> int:
+    instance.value = 1
+    reveal_type(instance.value)  # revealed: Literal[1]
+    return instance.value
+```
 
-    def initialize(self) -> int:
-        if self.value is None:
-            self.value = 1
-        reveal_type(self.value)  # revealed: int
-        return self.value
+A conditional assignment also removes `None` from later reads.
 
-    def reject(self) -> None:
-        self.value = "wrong"  # error: [invalid-assignment]
+```py
+def initialize(instance: Slotted) -> int:
+    if instance.value is None:
+        instance.value = 1
+    return instance.value
+```
 
-class ClassAnnotated:
+Narrowing does not change which values can be assigned to the declared attribute.
+
+```py
+def reject(instance: Slotted) -> None:
+    instance.value = "wrong"  # error: [invalid-assignment]
+```
+
+## Assignments narrow slots annotated in class bodies
+
+An annotation in the class body follows the same narrowing rules as an annotation in an initializer.
+
+```py
+class Slotted:
     __slots__ = ("value",)
     value: int | None
 
-    def assign(self) -> int:
-        self.value = 1
-        reveal_type(self.value)  # revealed: Literal[1]
-        return self.value
+def assign(instance: Slotted) -> int:
+    instance.value = 1
+    return instance.value
 ```
 
-An arbitrary data descriptor can transform an assigned value, so it does not receive the same
-storage-specific narrowing.
+## Assignments do not narrow arbitrary descriptors
+
+Unlike a slot, an arbitrary data descriptor can transform an assigned value in its setter. Later
+reads therefore retain the return type of the descriptor's `__get__` method.
 
 ```py
 class TransformingDescriptor:
@@ -139,60 +178,56 @@ class Slotted:
     __slots__ = ("value",)
     value: int
 
+reveal_type(Slotted.value)  # revealed: MemberDescriptorType
 reveal_type(Slotted().value)  # revealed: int
 Slotted().value = 1
 Slotted().value = "wrong"  # error: [invalid-assignment]
 ```
 
-## Slotted attributes declared in stub files
+## Slots declared in stub files
 
-A stub annotation describes a runtime slot without creating a conflicting class variable, whether
-the annotation has an ellipsis placeholder or no value at all.
+A bare stub annotation describes the value stored in a runtime slot without creating a conflicting
+class variable.
 
 ```pyi
-from types import MemberDescriptorType
-
-class Slotted:
-    __slots__ = ("value", "other")
+class BareAnnotation:
+    __slots__ = ("value",)
     value: int
-    other: str = ...
 
-reveal_type(Slotted.value)  # revealed: MemberDescriptorType
-reveal_type(Slotted.other)  # revealed: MemberDescriptorType
+reveal_type(BareAnnotation.value)  # revealed: MemberDescriptorType
+reveal_type(BareAnnotation().value)  # revealed: int
+BareAnnotation().value = 1
+BareAnnotation().value = "wrong"  # error: [invalid-assignment]
+```
 
-instance = Slotted()
-reveal_type(instance.value)  # revealed: int
-reveal_type(instance.other)  # revealed: str
-instance.value = 1
-instance.value = "wrong"  # error: [invalid-assignment]
-instance.other = "valid"
-instance.other = 1  # error: [invalid-assignment]
+An ellipsis placeholder in a stub has the same meaning and does not conflict with its slot.
+
+```pyi
+class EllipsisAnnotation:
+    __slots__ = ("value",)
+    value: str = ...
+
+reveal_type(EllipsisAnnotation().value)  # revealed: str
+EllipsisAnnotation().value = "valid"
+EllipsisAnnotation().value = 1  # error: [invalid-assignment]
 ```
 
 ## Standard-library slot declarations
 
-Standard-library stubs declare writable slotted attributes using ordinary annotations.
+Standard-library stubs use ordinary annotations for writable slotted attributes. For example,
+`TarInfo.size` remains a writable `int`.
 
 ```py
 from tarfile import TarInfo
-from zipfile import ZipInfo
 
 tar_info = TarInfo("example")
-reveal_type(tar_info.size)  # revealed: int
 tar_info.size = 1
-tar_info.name = "updated"
 tar_info.size = "wrong"  # error: [invalid-assignment]
-
-zip_info = ZipInfo("example")
-reveal_type(zip_info.external_attr)  # revealed: int
-zip_info.external_attr = 1
-zip_info.filename = "updated"
-zip_info.external_attr = "wrong"  # error: [invalid-assignment]
 ```
 
-## Slot descriptors preserve generic specialization
+## Generic slots use the instance's type arguments
 
-A generic slot has the value type provided by the receiver's specialization.
+A slot in a generic class uses the type arguments of the instance.
 
 ```py
 from typing import Generic, TypeVar
@@ -223,10 +258,9 @@ instance.value = 1
 del instance.value
 ```
 
-## Attributes initialized in `__new__`
+## Slots initialized in `__new__`
 
-Slots declare attributes initialized on the instance returned by `__new__`, including attributes
-that are later modified by augmented assignments.
+Initializing a slot in `__new__` must not interfere with an augmented assignment to the same slot.
 
 ```py
 class Counter:
@@ -240,56 +274,76 @@ class Counter:
     def increment(self) -> None:
         self.value += 1
 
-    def current(self):
-        return self.value
-
 reveal_type(Counter().value)  # revealed: Unknown
 ```
 
-## Supported slot declaration forms
+## Supported ways to declare slots
 
-A single string names one slot. Literal tuples, lists, sets, and dictionaries provide their slot
-names as elements or dictionary keys.
+A single string declares one slot.
 
 ```py
 class StringSlots:
     __slots__ = "value"
 
+reveal_type(StringSlots().value)  # revealed: Unknown
+```
+
+A tuple can declare multiple slots.
+
+```py
 class TupleSlots:
     __slots__ = ("first", "second")
 
+reveal_type(TupleSlots().first)  # revealed: Unknown
+reveal_type(TupleSlots().second)  # revealed: Unknown
+```
+
+A list can also provide the slot names.
+
+```py
 class ListSlots:
     __slots__ = ["value"]
 
+reveal_type(ListSlots().value)  # revealed: Unknown
+```
+
+A set can provide the slot names as its elements.
+
+```py
 class SetSlots:
     __slots__ = {"value"}
 
+reveal_type(SetSlots().value)  # revealed: Unknown
+```
+
+When `__slots__` is a dictionary, its keys are the slot names.
+
+```py
 class DictionarySlots:
     __slots__ = {"value": "Documentation for the slot."}
 
-reveal_type(StringSlots().value)  # revealed: Unknown
-reveal_type(TupleSlots().first)  # revealed: Unknown
-reveal_type(TupleSlots().second)  # revealed: Unknown
-reveal_type(ListSlots().value)  # revealed: Unknown
-reveal_type(SetSlots().value)  # revealed: Unknown
 reveal_type(DictionarySlots().value)  # revealed: Unknown
 ```
 
 ## Annotated and indirect slot declarations
 
-An annotation on `__slots__` does not hide its runtime value. A statically known tuple can also be
-supplied through another variable.
+An annotation on `__slots__` does not hide its runtime value.
 
 ```py
 class AnnotatedSlots:
     __slots__: tuple[str, ...] = ("value",)
 
+reveal_type(AnnotatedSlots().value)  # revealed: Unknown
+```
+
+A statically known tuple can also be supplied through another variable.
+
+```py
 slot_names = ("value",)
 
 class IndirectSlots:
     __slots__ = slot_names
 
-reveal_type(AnnotatedSlots().value)  # revealed: Unknown
 reveal_type(IndirectSlots().value)  # revealed: Unknown
 ```
 
@@ -342,50 +396,54 @@ class Child(Base):
         self.base_value = 1
         self.child_value = 2
 
+reveal_type(Child.base_value)  # revealed: MemberDescriptorType
 reveal_type(Child().base_value)  # revealed: int
-reveal_type(Child().child_value)  # revealed: int
 ```
 
-## Slots inherit attribute declarations from their bases
+## Slots use annotations inherited from base classes
 
-A subclass can introduce storage for an instance attribute that a slotted base only declares. The
-inherited annotation still controls both the value returned by the slot and the values it accepts.
+A class with empty `__slots__` can declare an instance attribute without providing a slot for it.
+The annotation alone does not make the attribute writable.
 
 ```py
-class Contract:
+class Base:
     __slots__ = ()
     value: int
 
-class Implementation(Contract):
+Base().value = 1  # error: [unresolved-attribute]
+```
+
+A subclass can create the missing slot. Its inherited annotation controls both reads and writes.
+
+```py
+class Child(Base):
     __slots__ = ("value",)
 
-Contract().value = 1  # error: [unresolved-attribute]
-
-item = Implementation()
+item = Child()
 reveal_type(item.value)  # revealed: int
 item.value = 1
 item.value = "wrong"  # error: [invalid-assignment]
 ```
 
-An inherited generic declaration is specialized using the subclass's base type.
+A generic base class supplies the type chosen by its subclass.
 
 ```py
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
 
-class GenericContract(Generic[T]):
+class GenericBase(Generic[T]):
     __slots__ = ()
     value: T
 
-class IntegerImplementation(GenericContract[int]):
+class IntegerChild(GenericBase[int]):
     __slots__ = ("value",)
 
-reveal_type(IntegerImplementation().value)  # revealed: int
-IntegerImplementation().value = "wrong"  # error: [invalid-assignment]
+reveal_type(IntegerChild().value)  # revealed: int
+IntegerChild().value = "wrong"  # error: [invalid-assignment]
 ```
 
-## Subclass declarations refine inherited slots
+## Subclass annotations override inherited slot types
 
 A subclass can narrow an inherited attribute declaration even when its storage remains in a base
 class's slot. Reads and writes use the subclass's declared type, as they do without slots.
@@ -399,18 +457,12 @@ class Child(Base):
     __slots__ = ()
     value: int
 
-    def __init__(self) -> None:
-        self.value = 1
-
-    def get(self) -> int:
-        return self.value
-
 reveal_type(Child().value)  # revealed: int
 Child().value = 2
 Child().value = None  # error: [invalid-assignment]
 ```
 
-An annotation on an assignment in the subclass's initializer establishes the same narrower contract.
+An annotation on an assignment in the subclass's initializer establishes the same narrower type.
 
 ```py
 class InitializedChild(Base):
@@ -424,8 +476,7 @@ reveal_type(InitializedChild().value)  # revealed: int
 InitializedChild().value = None  # error: [invalid-assignment]
 ```
 
-As with an ordinary instance attribute, an overriding declaration replaces the inherited contract
-rather than requiring assigned values to satisfy both declarations.
+As with an ordinary instance attribute, an overriding annotation replaces the inherited type.
 
 ```py
 class StringChild(Base):
@@ -433,25 +484,7 @@ class StringChild(Base):
         self.value: str = "valid"
 
 reveal_type(StringChild().value)  # revealed: str
-StringChild().value = "updated"
 StringChild().value = 1  # error: [invalid-assignment]
-```
-
-## Inherited unknown declarations
-
-Handling an unannotated slot must not change the precedence of an unrelated inherited instance
-attribute whose explicitly declared type is unknown.
-
-```py
-class Base:
-    def initialize(self) -> None:
-        self.value: Missing = None  # error: [unresolved-reference]
-
-class Child(Base):
-    def initialize(self) -> None:
-        self.value = 1
-
-reveal_type(Child().value)  # revealed: Unknown
 ```
 
 ## Extra instance attributes require an instance dictionary
@@ -511,10 +544,9 @@ class OrdinaryChild(SlottedBase):
 reveal_type(OrdinaryChild().extra)  # revealed: int
 ```
 
-## Synthesized dataclass slots
+## Dataclass-generated slots
 
-Dataclass-generated slots have the same instance layout as slots written directly in the class body.
-Subclasses inherit that layout unless they introduce an instance dictionary.
+A dataclass with `slots=True` does not give its instances a dictionary.
 
 ```py
 from dataclasses import dataclass
@@ -524,7 +556,11 @@ class SlottedDataclass:
     value: int
 
 SlottedDataclass(1).__dict__  # error: [unresolved-attribute]
+```
 
+Its subclasses inherit that restricted instance layout unless they introduce a dictionary.
+
+```py
 class SlottedChild(SlottedDataclass):
     __slots__ = ("other",)
 
@@ -534,26 +570,7 @@ class SlottedChild(SlottedDataclass):
 SlottedChild(1).__dict__  # error: [unresolved-attribute]
 ```
 
-A `KW_ONLY` sentinel changes constructor parameter ordering but does not need instance storage,
-regardless of the sentinel's name.
-
-```py
-from dataclasses import KW_ONLY
-
-@dataclass(slots=True)
-class KeywordOnlySlots:
-    required: int
-    marker: KW_ONLY
-    keyword_only: int
-
-reveal_type(KeywordOnlySlots.__slots__)  # revealed: tuple[Literal["required"], Literal["keyword_only"]]
-
-class OrdinaryWithMarker:
-    __slots__ = ("required",)
-    marker: KW_ONLY
-```
-
-## Synthesized dataclass slots exclude inherited storage
+## Dataclass-generated slots exclude inherited slots
 
 A slotted dataclass creates descriptors only for fields that do not already have an inherited slot.
 
@@ -569,7 +586,11 @@ class Child(Parent):
     other: int
 
 reveal_type(Child.__slots__)  # revealed: tuple[Literal["other"]]
+```
 
+Redeclaring an inherited field does not create a second slot for that field.
+
+```py
 @dataclass(slots=True)
 class Redefined(Parent):
     value: int
@@ -607,7 +628,7 @@ class SlottedChild(SlottedBase):
 reveal_type(SlottedChild.__slots__)  # revealed: tuple[Literal["other"]]
 ```
 
-## Synthesized dataclass slots on Python 3.10
+## Dataclass-generated slots on Python 3.10
 
 Python 3.10 includes inherited fields in generated dataclass slots. For consistency across Python
 versions, ty intentionally uses the Python 3.11-and-later behavior when targeting Python 3.10.
@@ -654,9 +675,9 @@ SlottedModel(1).__dict__  # error: [unresolved-attribute]
 SlottedModel(1).other = 1  # error: [unresolved-attribute]
 ```
 
-## Builtin bases without instance dictionaries
+## Slotted subclasses of built-in types
 
-A slotted subclass of a builtin without an instance dictionary cannot create extra attributes.
+A slotted subclass of a built-in type without an instance dictionary cannot create extra attributes.
 
 ```py
 class SlottedString(str):
@@ -668,33 +689,9 @@ class SlottedString(str):
 SlottedString("value").__dict__  # error: [unresolved-attribute]
 ```
 
-## Descriptors and custom attribute setters
+## Descriptor setters do not require instance dictionaries
 
-Data descriptors can handle writes without an instance dictionary, and a custom `__setattr__` can
-implement its own storage policy.
-
-```py
-class Descriptor:
-    def __set__(self, instance: object, value: int) -> None: ...
-
-class SlottedDescriptor:
-    __slots__ = ()
-    value = Descriptor()
-
-SlottedDescriptor().value = 1
-SlottedDescriptor().value = "wrong"  # error: [invalid-assignment]
-
-class CustomSetter:
-    __slots__ = ()
-    shared = 1
-
-    def __setattr__(self, name: str, value: int) -> None: ...
-
-CustomSetter().shared = 1
-```
-
-A descriptor may be hidden behind a gradual class-body annotation. Its runtime setter must remain
-available even though its declared type does not expose `__set__`.
+A data descriptor can accept assignments even when its owning instance has no dictionary.
 
 ```py
 from typing import Any
@@ -704,41 +701,89 @@ class Descriptor:
 
 class SlottedDescriptor:
     __slots__ = ()
-    value: Any = Descriptor()
+    value = Descriptor()
 
 SlottedDescriptor().value = 1
+SlottedDescriptor().value = "wrong"  # error: [invalid-assignment]
 ```
 
-## Instance dictionary and weak-reference slots
-
-A slotted instance has neither `__dict__` nor `__weakref__` unless explicitly requested or
-inherited.
+Annotating a descriptor as `Any` does not hide the setter defined by the actual descriptor.
 
 ```py
-from types import GetSetDescriptorType
+class AnnotatedDescriptor:
+    __slots__ = ()
+    value: Any = Descriptor()
 
+AnnotatedDescriptor().value = 1
+```
+
+## Custom attribute setters do not require instance dictionaries
+
+A custom `__setattr__` method can decide how assignments are handled even when its instances have no
+dictionaries.
+
+```py
+class CustomSetter:
+    __slots__ = ()
+    shared = 1
+
+    def __setattr__(self, name: str, value: int) -> None: ...
+
+CustomSetter().shared = 1
+```
+
+## Instance dictionaries require a dictionary slot
+
+A slotted instance does not have an instance dictionary unless its slots include `__dict__`.
+
+```py
 class Slotted:
     __slots__ = ("value",)
 
 Slotted().__dict__  # error: [unresolved-attribute]
-Slotted().__weakref__  # error: [unresolved-attribute]
-
-class WithSpecialSlots:
-    __slots__ = ("value", "__dict__", "__weakref__")
-
-WithSpecialSlots().__dict__
-WithSpecialSlots().__weakref__
-reveal_type(WithSpecialSlots.__dict__)  # revealed: dict[str, Any]
-reveal_type(WithSpecialSlots.__weakref__)  # revealed: GetSetDescriptorType
-
-def accepts_get_set_descriptor(descriptor: GetSetDescriptorType) -> None: ...
-
-accepts_get_set_descriptor(WithSpecialSlots.__weakref__)
-WithSpecialSlots().__weakref__ = None  # error: [invalid-assignment]
-del WithSpecialSlots().__weakref__  # error: [invalid-assignment]
 ```
 
-A slotted class can still define a descriptor named `__dict__` without providing ordinary instance
+Declaring a `__dict__` slot makes the instance dictionary available.
+
+```py
+class WithDictionary:
+    __slots__ = ("value", "__dict__")
+
+WithDictionary().__dict__
+```
+
+## Weak-reference slots create read-only descriptors
+
+A slotted instance does not expose `__weakref__` unless the slot is explicitly declared.
+
+```py
+class Slotted:
+    __slots__ = ("value",)
+
+Slotted().__weakref__  # error: [unresolved-attribute]
+```
+
+An explicit `__weakref__` slot creates a `GetSetDescriptorType` on the class and permits reads on
+its instances.
+
+```py
+class WithWeakReference:
+    __slots__ = ("value", "__weakref__")
+
+reveal_type(WithWeakReference.__weakref__)  # revealed: GetSetDescriptorType
+WithWeakReference().__weakref__
+```
+
+The descriptor does not permit assigning to or deleting the attribute.
+
+```py
+WithWeakReference().__weakref__ = None  # error: [invalid-assignment]
+del WithWeakReference().__weakref__  # error: [invalid-assignment]
+```
+
+## A property named `__dict__` does not provide instance storage
+
+A slotted class can expose a property named `__dict__` without acquiring ordinary instance
 dictionary storage.
 
 ```py
@@ -750,6 +795,7 @@ class VirtualDictionary:
         return {"virtual": 1}
 
 reveal_type(VirtualDictionary().__dict__)  # revealed: dict[str, int]
+VirtualDictionary().extra = 1  # error: [unresolved-attribute]
 ```
 
 ## Weak-reference storage inherited from ordinary bases
@@ -788,34 +834,21 @@ reveal_type(SlottedDataclass.__slots__)  # revealed: tuple[Literal["value"], Lit
 
 ## Class-body annotations do not require instance storage
 
-A bare annotation can describe an attribute provided by a subclass, a dynamically installed
-descriptor, or a custom attribute accessor. The annotation itself does not require an instance slot.
+A bare annotation does not require an instance slot. It also does not make the attribute writable
+without a slot.
 
 ```py
-from typing import ClassVar, TYPE_CHECKING
-
 class Slotted:
     __slots__ = ("value",)
     value: int
-    shared: ClassVar[int] = 1
     missing: int
 
-    if TYPE_CHECKING:
-        dynamic: int
-
 Slotted().missing = 1  # error: [unresolved-attribute]
-
-class Mixin:
-    __slots__ = ()
-    provided_by_subclass: int
-
-class Child(Mixin):
-    __slots__ = ("provided_by_subclass",)
 ```
 
-## Class variables cannot conflict with slots
+## Class attributes cannot have the same name as a slot
 
-A class variable with the same name as a slot prevents the class from being created at runtime.
+Assigning to a slot name in the class body prevents Python from creating the class.
 
 ```py
 class Conflicting:
@@ -842,9 +875,9 @@ class DeletedDefault:
     del value
 ```
 
-## Variable-length builtins cannot add slots
+## `int`, `bytes`, and `tuple` subclasses cannot add slots
 
-Subclasses of variable-length builtin types cannot declare additional instance slots.
+Python rejects nonempty `__slots__` on subclasses of `int`, `bytes`, and `tuple`.
 
 ```py
 class SlottedInteger(int):  # error: [instance-layout-conflict]

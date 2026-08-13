@@ -277,17 +277,16 @@ class Task(asyncio.Task[Any]): ...
 class SubClass(Task, Future): ...  # fine
 ```
 
-## Non-tuple `__slots__` definitions
+## Slot names declared in a list
 
-Statically known slot names contribute to the instance layout even when they are provided in a list
-rather than a tuple.
+A list of slot names restricts the instance layout just like a tuple.
 
 ```py
 class A:
-    __slots__ = ["a", "b"]
+    __slots__ = ["a"]
 
 class B:
-    __slots__ = ("c", "d")
+    __slots__ = ("b",)
 
 class C(A, B): ...  # error: [instance-layout-conflict]
 ```

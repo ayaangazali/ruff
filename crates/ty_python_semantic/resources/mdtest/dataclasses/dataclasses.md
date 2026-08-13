@@ -1694,15 +1694,19 @@ class B:
 reveal_type(B.__slots__)  # revealed: tuple[Literal["x"], Literal["y"]]
 ```
 
-A dataclass cannot generate slots when the class body already defines `__slots__`. Report the
-invalid dataclass without also reporting its fields as missing from the explicit slots.
+A dataclass cannot generate slots when its class body already defines `__slots__`. The invalid
+dataclass should produce only the dataclass error, not additional errors for its fields.
 
 ```py
 @dataclass(slots=True)
 class ExistingSlots:  # error: [invalid-dataclass] "Dataclass `ExistingSlots` cannot combine `slots=True` with `__slots__`"
     value: int
     __slots__ = ()
+```
 
+An explicit `__slots__` declaration remains valid when slot generation is disabled.
+
+```py
 @dataclass(slots=False)
 class ValidExistingSlots:
     __slots__ = ("value",)
@@ -1723,8 +1727,7 @@ class DynamicExistingSlots:  # error: [invalid-dataclass] "Dataclass `DynamicExi
 
 ### `weakref_slot`
 
-When a dataclass is defined with `weakref_slot=True` on Python >=3.11, a `__weakref__` descriptor is
-generated. Subclasses reuse the inherited weak-reference slot instead of creating another one.
+On Python 3.11 and later, `weakref_slot=True` creates a `__weakref__` descriptor on the dataclass.
 
 ```toml
 [environment]
@@ -1741,7 +1744,11 @@ class C:
 reveal_type(C.__weakref__)  # revealed: GetSetDescriptorType
 reveal_type(C(1).__weakref__)  # revealed: Any | None
 reveal_type(C.__slots__)  # revealed: tuple[Literal["x"], Literal["__weakref__"]]
+```
 
+A slotted subclass uses the inherited weak-reference slot instead of creating another one.
+
+```py
 @dataclass(slots=True, weakref_slot=True)
 class Child(C):
     y: int

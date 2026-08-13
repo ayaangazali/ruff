@@ -61,7 +61,15 @@ use ty_python_core::{
     SemanticIndex, attribute_scopes, definition::DefinitionKind, scope::ScopeId, semantic_index,
 };
 
-/// Validate the instance layout and class-body declarations introduced by `__slots__`.
+/// Rejects slot layouts that fail while Python constructs the runtime class.
+///
+/// ```python
+/// class Example:
+///     __slots__ = ("value",)
+///     value = 1  # This class binding conflicts with the generated slot descriptor.
+/// ```
+///
+/// Stub declarations do not execute and therefore cannot create runtime class-namespace conflicts.
 fn check_class_slots<'db>(
     context: &InferContext<'db, '_>,
     class: StaticClassLiteral<'db>,
@@ -87,26 +95,23 @@ fn check_class_slots<'db>(
         return;
     };
 
-    let body_scope = class.body_scope(db);
-    let scope_id = body_scope.file_scope_id(db);
-    let table = index.place_table(scope_id);
-    let use_def = index.use_def_map(scope_id);
-
     if class.has_explicit_slots(db) && !context.in_stub() {
+        let scope_id = class.body_scope(db).file_scope_id(db);
+        let table = index.place_table(scope_id);
+        let use_def = index.use_def_map(scope_id);
+
         for name in slot_names {
             let Some(symbol) = table.symbol_id(name) else {
                 continue;
             };
 
             for binding in use_def.end_of_scope_symbol_bindings(symbol) {
-                let Some(definition) = binding.binding.definition() else {
-                    continue;
-                };
-
-                if let Some(builder) = context.report_lint(
-                    &INVALID_ASSIGNMENT,
-                    definition.focus_range(db, context.module()),
-                ) {
+                if let Some(definition) = binding.binding.definition()
+                    && let Some(builder) = context.report_lint(
+                        &INVALID_ASSIGNMENT,
+                        definition.focus_range(db, context.module()),
+                    )
+                {
                     builder.into_diagnostic(format_args!(
                         "Class variable `{name}` conflicts with an instance slot"
                     ));

@@ -521,7 +521,14 @@ impl<'db> AllMembers<'db> {
         }
     }
 
-    /// Extend a class or instance with the descriptors introduced by a class's slots.
+    /// Includes slot descriptors that are generated outside the class-body symbol table.
+    ///
+    /// ```python
+    /// class Example:
+    ///     __slots__ = ("value",)
+    /// ```
+    ///
+    /// Both `Example` and `Example()` expose `value` even without an explicit attribute binding.
     fn extend_with_slot_members(
         &mut self,
         db: &'db dyn Db,
