@@ -1694,6 +1694,33 @@ class B:
 reveal_type(B.__slots__)  # revealed: tuple[Literal["x"], Literal["y"]]
 ```
 
+A dataclass cannot generate slots when the class body already defines `__slots__`. Report the
+invalid dataclass without also reporting its fields as missing from the explicit slots.
+
+```py
+@dataclass(slots=True)
+class ExistingSlots:  # error: [invalid-dataclass] "Dataclass `ExistingSlots` cannot combine `slots=True` with `__slots__`"
+    value: int
+    __slots__ = ()
+
+@dataclass(slots=False)
+class ValidExistingSlots:
+    __slots__ = ("value",)
+    value: int
+```
+
+An explicit `__slots__` declaration also conflicts when its names are not statically known.
+
+```py
+def choose_slots() -> tuple[str, ...]:
+    return ("value",)
+
+@dataclass(slots=True)
+class DynamicExistingSlots:  # error: [invalid-dataclass] "Dataclass `DynamicExistingSlots` cannot combine `slots=True` with `__slots__`"
+    value: int
+    __slots__ = choose_slots()
+```
+
 ### `weakref_slot`
 
 When a dataclass is defined with `weakref_slot=True` on Python >=3.11, a `__weakref__` descriptor is

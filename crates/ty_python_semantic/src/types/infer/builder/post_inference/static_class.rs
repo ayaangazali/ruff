@@ -68,6 +68,21 @@ fn check_class_slots<'db>(
     index: &SemanticIndex<'db>,
 ) {
     let db = context.db();
+
+    if class.has_explicit_slots(db)
+        && class
+            .dataclass_params(db)
+            .is_some_and(|parameters| parameters.flags(db).contains(DataclassFlags::SLOTS))
+    {
+        if let Some(builder) = context.report_lint(&INVALID_DATACLASS, class.header_range(db)) {
+            builder.into_diagnostic(format_args!(
+                "Dataclass `{}` cannot combine `slots=True` with `__slots__`",
+                class.name(db),
+            ));
+        }
+        return;
+    }
+
     let Some(slot_names) = class.slot_names(db) else {
         return;
     };

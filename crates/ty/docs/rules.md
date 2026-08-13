@@ -1125,9 +1125,10 @@ class D(A, B, C): ...
 **Known problems**
 
 
-Classes that have "dynamic" definitions of `__slots__` (definitions do not consist
-of string literals, or tuples of string literals) are not currently considered disjoint
-bases by ty.
+Classes whose slot names cannot be determined statically are not currently considered
+disjoint bases by ty. Static definitions can include string literals and literal tuples,
+lists, sets, or dictionaries of string literals, as long as a mutable container is not
+subsequently observed or modified in the class body.
 
 Additionally, this check is not exhaustive: many C extensions (including several in
 the standard library) define classes that use extended memory layouts and thus cannot
@@ -1434,6 +1435,7 @@ class:
 
 - `order=True` with `eq=False`
 - `weakref_slot=True` with `slots=False`
+- `slots=True` when the class already defines `__slots__`
 
 Applying `@dataclass` to a class that inherits from `NamedTuple`, `TypedDict`,
 `Enum`, or `Protocol` is also invalid:
@@ -1513,8 +1515,9 @@ Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.1-alpha.1">0.
 **What it does**
 
 
-Checks for declarations where the inferred type of an existing symbol
-is not [assignable to] its post-hoc declared type.
+Checks for declarations where the inferred type of an existing symbol is not
+[assignable to] its post-hoc declared type, or where an instance attribute is declared
+without an available slot in a class that does not have an instance dictionary.
 
 **Why is this bad?**
 
@@ -1528,6 +1531,16 @@ weaken a type checker's ability to accurately reason about your code.
 ```python
 a = 1
 a: str  # error
+```
+
+An instance attribute also cannot be declared if the class's slots do not provide
+storage for it:
+
+```python
+class Slotted:
+    __slots__ = ("value",)
+    value: int
+    other: int  # error
 ```
 
 [assignable to]: https://typing.python.org/en/latest/spec/glossary.html#term-assignable
