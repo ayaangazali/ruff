@@ -7,11 +7,7 @@ use ruff_db::{
     parsed::{ParsedModuleRef, parsed_module},
 };
 use ruff_python_ast as ast;
-use ruff_python_ast::{
-    PythonVersion,
-    name::Name,
-    visitor::source_order::{self, SourceOrderVisitor},
-};
+use ruff_python_ast::{PythonVersion, name::Name};
 use ruff_text_size::{Ranged, TextRange};
 use std::cell::RefCell;
 
@@ -309,44 +305,6 @@ fn literal_slot_name(expression: &ast::Expr) -> Option<Name> {
         .map(|literal| Name::new(literal.value.to_str()))
 }
 
-/// Checks whether a mutable slots container escapes its original class-body assignment.
-///
-/// A later reference can mutate the container before the class is created:
-///
-/// ```python
-/// class Example:
-///     __slots__ = ["value"]
-///     __slots__.append("extra")
-/// ```
-fn slots_referenced_after_assignment(statements: &[ast::Stmt]) -> bool {
-    struct SlotReferenceVisitor {
-        found: bool,
-    }
-
-    impl<'ast> SourceOrderVisitor<'ast> for SlotReferenceVisitor {
-        fn visit_expr(&mut self, expression: &'ast ast::Expr) {
-            if self.found {
-                return;
-            }
-
-            if expression
-                .as_name_expr()
-                .is_some_and(|name| name.id == "__slots__")
-            {
-                self.found = true;
-            } else {
-                source_order::walk_expr(self, expression);
-            }
-        }
-    }
-
-    let mut visitor = SlotReferenceVisitor { found: false };
-    statements.iter().any(|statement| {
-        visitor.visit_stmt(statement);
-        visitor.found
-    })
-}
-
 #[salsa::tracked]
 impl<'db> StaticClassLiteral<'db> {
     /// Return `true` if this class represents `known_class`
@@ -392,7 +350,7 @@ impl<'db> StaticClassLiteral<'db> {
     /// Resolves explicit slot declarations and fields synthesized by slotted dataclasses.
     ///
     /// Tuple and string values retain their inferred literal types; mutable list, set, and
-    /// dictionary literals are inspected directly and become dynamic if referenced again.
+    /// dictionary literals are resolved from the indexed reaching assignment.
     #[salsa::tracked(
         returns(ref),
         cycle_initial=|_, _, _| SlotDefinition::Dynamic,
@@ -430,7 +388,8 @@ impl<'db> StaticClassLiteral<'db> {
             return SlotDefinition::Names(names.into_boxed_slice());
         };
         let env = ProgramEnvironment::from_scope(body_scope);
-        let bindings = use_def_map(db, body_scope).end_of_scope_symbol_bindings(symbol);
+        let use_def = use_def_map(db, body_scope);
+        let bindings = use_def.end_of_scope_symbol_bindings(symbol);
         let Place::Defined(DefinedPlace {
             ty: slots_ty,
             definedness: Definedness::AlwaysDefined,
@@ -459,39 +418,26 @@ impl<'db> StaticClassLiteral<'db> {
                 .map_or(SlotDefinition::Dynamic, SlotDefinition::Names);
         }
 
-        let parsed = parsed_module(db, self.python_file(db)).load(db);
-        let class_node = self.node(db, &parsed);
-        let assignment =
-            class_node.body.iter().enumerate().rev().find_map(
-                |(index, statement)| match statement {
-                    ast::Stmt::Assign(assign)
-                        if assign.targets.iter().any(|target| {
-                            target
-                                .as_name_expr()
-                                .is_some_and(|name| name.id == "__slots__")
-                        }) =>
-                    {
-                        Some((index, assign.value.as_ref()))
-                    }
-                    ast::Stmt::AnnAssign(assign)
-                        if assign
-                            .target
-                            .as_name_expr()
-                            .is_some_and(|name| name.id == "__slots__") =>
-                    {
-                        assign.value.as_deref().map(|value| (index, value))
-                    }
-                    _ => None,
-                },
-            );
-
-        let Some((assignment_index, value)) = assignment else {
+        let Ok(definition) = use_def
+            .end_of_scope_symbol_bindings(symbol)
+            .filter_map(|binding| binding.binding.definition())
+            .exactly_one()
+        else {
             return SlotDefinition::Dynamic;
         };
 
-        if slots_referenced_after_assignment(&class_node.body[assignment_index + 1..]) {
+        if semantic_index(db, body_scope.program_file(db))
+            .constraining_collection_uses(definition)
+            .next()
+            .is_some()
+        {
             return SlotDefinition::Dynamic;
         }
+
+        let parsed = parsed_module(db, self.python_file(db)).load(db);
+        let Some(value) = definition.kind(db).value(&parsed) else {
+            return SlotDefinition::Dynamic;
+        };
 
         let names = match value {
             ast::Expr::List(list) => list.elts.iter().map(literal_slot_name).collect(),

@@ -325,6 +325,32 @@ class DictionarySlots:
 reveal_type(DictionarySlots().value)  # revealed: Unknown
 ```
 
+## Mutable slots and unrelated class-body references
+
+A nested class can declare its own slots without changing the slots of its enclosing class.
+
+```py
+class Outer:
+    __slots__ = ["value"]
+
+    class Inner:
+        __slots__ = ()
+
+reveal_type(Outer.value)  # revealed: MemberDescriptorType
+Outer().value = 1
+```
+
+Reading a slots list without changing it also leaves its declared names intact.
+
+```py
+class ReadOnly:
+    __slots__ = ["value"]
+    count = len(__slots__)
+
+reveal_type(ReadOnly.value)  # revealed: MemberDescriptorType
+ReadOnly().value = 1
+```
+
 ## Annotated and indirect slot declarations
 
 An annotation on `__slots__` does not hide its runtime value.
