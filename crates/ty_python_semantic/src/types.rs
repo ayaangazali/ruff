@@ -106,7 +106,7 @@ use crate::types::variance::VarianceInferable;
 use crate::types::visitor::{any_over_type, dynamic_content};
 use crate::{Db, FxOrderSet, HasType, NameKind, Program, SemanticModel};
 pub(crate) use class::{ClassLiteral, ClassType, GenericAlias, StaticClassLiteral};
-pub use class::{KnownClass, MethodDecorator};
+pub use class::{KnownClass, MethodDecorator, SlotDescriptorKind, SlotDescriptorType};
 use instance::Protocol;
 pub use instance::{NominalInstanceType, ProtocolInstanceType};
 pub(crate) use literal::{
@@ -999,10 +999,7 @@ pub enum PropertyAccessorRole {
     Deleter,
 }
 
-/// Models a descriptor with specialized getter, setter, and deleter types.
-///
-/// Besides Python properties, this represents slot descriptors while retaining their actual
-/// `types.MemberDescriptorType` or `types.GetSetDescriptorType` runtime class.
+/// Represents an instance of `builtins.property` or `enum.property`.
 #[salsa::interned(debug, constructor=new_internal, heap_size=ruff_memory_usage::heap_size)]
 pub struct PropertyInstanceType<'db> {
     #[returns(copy)]
@@ -1044,20 +1041,6 @@ impl<'db> PropertyInstanceType<'db> {
         Self::new_internal(db, getter, setter, deleter, KnownClass::Property)
     }
 
-    /// Models slot accessors while preserving their actual runtime descriptor class.
-    ///
-    /// Slot descriptors share property's getter, setter, and deleter machinery, but must remain
-    /// `MemberDescriptorType` or `GetSetDescriptorType` rather than becoming `property` instances.
-    fn new_slot(
-        db: &'db dyn Db,
-        instance_class: KnownClass,
-        getter: Type<'db>,
-        setter: Option<Type<'db>>,
-        deleter: Option<Type<'db>>,
-    ) -> Self {
-        Self::new_internal(db, Some(getter), setter, deleter, instance_class)
-    }
-
     fn new_enum_property(
         db: &'db dyn Db,
         getter: Option<Type<'db>>,
@@ -1075,22 +1058,6 @@ impl<'db> PropertyInstanceType<'db> {
         deleter: Option<Type<'db>>,
     ) -> Self {
         Self::new_internal(db, getter, setter, deleter, self.instance_class(db))
-    }
-
-    /// Whether this descriptor represents storage introduced by an instance slot.
-    fn is_slot_descriptor(self, db: &'db dyn Db) -> bool {
-        matches!(
-            self.instance_class(db),
-            KnownClass::MemberDescriptorType | KnownClass::GetSetDescriptorType
-        )
-    }
-
-    /// Whether this descriptor is a Python property rather than an instance slot.
-    fn is_property(self, db: &'db dyn Db) -> bool {
-        matches!(
-            self.instance_class(db),
-            KnownClass::Property | KnownClass::EnumProperty
-        )
     }
 
     fn instance_fallback(self, db: &'db dyn Db, env: &ProgramEnvironment<'db>) -> Type<'db> {
@@ -1391,8 +1358,10 @@ pub enum Type<'db> {
     /// created as a result of some runtime operation (e.g. a type-alias statement,
     /// a typevar definition, or `Generic[T]` in a class's bases list).
     KnownInstance(KnownInstanceType<'db>),
-    /// A descriptor instance with specialized getter, setter, and deleter types.
+    /// A Python property with specialized getter, setter, and deleter types.
     PropertyInstance(PropertyInstanceType<'db>),
+    /// An interpreter-created descriptor for an instance slot.
+    SlotDescriptor(SlotDescriptorType<'db>),
     /// The set of objects in any of the types in the union
     Union(UnionType<'db>),
     /// The set of objects in all of the types in the intersection
@@ -1959,6 +1928,9 @@ impl<'db> Type<'db> {
             Type::PropertyInstance(property) => {
                 property.instance_fallback(db, env).nominal_class(db, env)
             }
+            Type::SlotDescriptor(descriptor) => {
+                descriptor.instance_fallback(db, env).nominal_class(db, env)
+            }
             _ => None,
         }
     }
@@ -2077,18 +2049,12 @@ impl<'db> Type<'db> {
         }
     }
 
-    /// Returns any descriptor represented by specialized property-style accessors.
-    const fn as_descriptor_instance(self) -> Option<PropertyInstanceType<'db>> {
+    /// Returns the specialized Python property represented by this type.
+    pub const fn as_property_instance(self) -> Option<PropertyInstanceType<'db>> {
         match self {
             Type::PropertyInstance(property) => Some(property),
             _ => None,
         }
-    }
-
-    /// Returns an actual Python property, excluding slot descriptors.
-    pub fn as_property_instance(self, db: &'db dyn Db) -> Option<PropertyInstanceType<'db>> {
-        self.as_descriptor_instance()
-            .filter(|descriptor| descriptor.is_property(db))
     }
 
     /// Whether assigning through this descriptor writes directly to instance storage.
@@ -2097,9 +2063,7 @@ impl<'db> Type<'db> {
     /// transforming it. Reads, writes, and assignment narrowing therefore use the receiver's
     /// ordinary instance member.
     fn writes_directly_to_instance_storage(self, db: &'db dyn Db) -> bool {
-        self.as_descriptor_instance().is_some_and(|descriptor| {
-            descriptor.is_slot_descriptor(db) && descriptor.setter(db).is_some()
-        })
+        matches!(self, Type::SlotDescriptor(descriptor) if descriptor.is_writable(db))
     }
 
     /// Returns the receiver's instance member when this descriptor exposes that storage directly.
@@ -2240,8 +2204,8 @@ impl<'db> Type<'db> {
         }
     }
 
-    fn is_property_instance(self, db: &'db dyn Db) -> bool {
-        self.as_property_instance(db).is_some()
+    const fn is_property_instance(&self) -> bool {
+        matches!(self, Type::PropertyInstance(..))
     }
 
     pub(crate) fn module_literal(
@@ -2465,6 +2429,7 @@ impl<'db> Type<'db> {
             | Type::GenericAlias(_)
             | Type::SubclassOf(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::LiteralValue(_)
             | Type::DataclassDecorator(_)
             | Type::DataclassTransformer(_)
@@ -2521,6 +2486,7 @@ impl<'db> Type<'db> {
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::FunctionLiteral(_)
             | Type::ModuleLiteral(_)
             | Type::WrapperDescriptor(_)
@@ -2555,6 +2521,7 @@ impl<'db> Type<'db> {
             | Type::TypeGuard(_)
             | Type::TypeForm(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::FunctionLiteral(_)
             | Type::ModuleLiteral(_)
             | Type::WrapperDescriptor(_)
@@ -2810,6 +2777,16 @@ impl<'db> Type<'db> {
             Type::PropertyInstance(property) => property
                 .recursive_type_normalized_impl(db, env, div, nested)
                 .map(Type::PropertyInstance),
+            Type::SlotDescriptor(descriptor) => descriptor
+                .value_type(db)
+                .recursive_type_normalized_impl(db, env, div, true)
+                .map(|value_type| {
+                    Type::SlotDescriptor(SlotDescriptorType::new(
+                        db,
+                        value_type,
+                        descriptor.kind(db),
+                    ))
+                }),
             Type::KnownBoundMethod(method_kind) => method_kind
                 .recursive_type_normalized_impl(db, env, div, nested)
                 .map(Type::KnownBoundMethod),
@@ -3040,7 +3017,7 @@ impl<'db> Type<'db> {
             }
             Type::DataclassDecorator(_) | Type::DataclassTransformer(_) => false,
             Type::NominalInstance(instance) => instance.is_singleton(db),
-            Type::PropertyInstance(_) => false,
+            Type::PropertyInstance(_) | Type::SlotDescriptor(_) => false,
             Type::Union(..) => {
                 // A single-element union, where the sole element was a singleton, would itself
                 // be a singleton type. However, unions with length < 2 should never appear in
@@ -3209,6 +3186,7 @@ impl<'db> Type<'db> {
             | Type::NominalInstance(_)
             | Type::ProtocolInstance(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
             | Type::TypeForm(_)
@@ -3744,6 +3722,10 @@ impl<'db> Type<'db> {
                 .to_instance(db, env)
                 .instance_member(db, env, name),
 
+            Type::SlotDescriptor(descriptor) => descriptor
+                .instance_fallback(db, env)
+                .instance_member(db, env, name),
+
             // Note: `super(pivot, owner).__dict__` refers to the `__dict__` of the `builtins.super` instance,
             // not that of the owner.
             // This means we should only look up instance members defined on the `builtins.super()` instance itself.
@@ -4019,34 +4001,13 @@ impl<'db> Type<'db> {
             }));
         }
 
-        // Slot access is fixed by the interpreter: class access returns the descriptor itself,
-        // and instance access directly reads the synthesized storage getter. Keeping this at the
-        // descriptor boundary avoids inventing specialized wrappers for public typeshed classes.
-        if let Type::PropertyInstance(descriptor) = self
-            && descriptor.is_slot_descriptor(db)
-            && let Some(getter) = descriptor.getter(db)
-        {
-            let Some(instance) = instance else {
-                return Ok(Some(DescriptorGetResult {
-                    return_type: self,
-                    kind: AttributeKind::DataDescriptor,
-                }));
-            };
-            let (return_type, error) =
-                match getter.try_call(db, env, &CallArguments::positional([instance])) {
-                    Ok(bindings) => (bindings.return_type(db, env), None),
-                    Err(error) => (
-                        error.return_type(db, env),
-                        Some(DescriptorGetCallContext::new(
-                            db,
-                            self,
-                            getter,
-                            Some(instance),
-                            owner,
-                        )),
-                    ),
-                };
-            return descriptor_get_result(return_type, AttributeKind::DataDescriptor, error);
+        // The interpreter returns the descriptor itself on class access and its stored value on
+        // instance access; no Python property accessors participate in either operation.
+        if let Type::SlotDescriptor(descriptor) = self {
+            return Ok(Some(DescriptorGetResult {
+                return_type: instance.map_or(self, |_| descriptor.value_type(db)),
+                kind: AttributeKind::DataDescriptor,
+            }));
         }
 
         try_call_dunder_get_inner(db, env.program(db), self, instance, owner)
@@ -4323,7 +4284,7 @@ impl<'db> Type<'db> {
         match self {
             Type::Dynamic(_) => !any_of_union,
             Type::SubclassOf(_) if self.dynamic_descriptor_type().is_some() => true,
-            Type::Never | Type::PropertyInstance(_) => true,
+            Type::Never | Type::PropertyInstance(_) | Type::SlotDescriptor(_) => true,
             Type::Union(union) if any_of_union => union
                 .elements(db)
                 .iter()
@@ -5006,13 +4967,13 @@ impl<'db> Type<'db> {
                     Place::bound(Type::int_literal(segment.into())).into()
                 }
 
-                Type::PropertyInstance(property) if name == "fget" && property.is_property(db) => {
+                Type::PropertyInstance(property) if name == "fget" => {
                     Place::bound(property.getter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property) if name == "fset" && property.is_property(db) => {
+                Type::PropertyInstance(property) if name == "fset" => {
                     Place::bound(property.setter(db).unwrap_or(Type::none(db, env))).into()
                 }
-                Type::PropertyInstance(property) if name == "fdel" && property.is_property(db) => {
+                Type::PropertyInstance(property) if name == "fdel" => {
                     Place::bound(property.deleter(db).unwrap_or(Type::none(db, env))).into()
                 }
 
@@ -5214,6 +5175,7 @@ impl<'db> Type<'db> {
                 | Type::SpecialForm(..)
                 | Type::KnownInstance(..)
                 | Type::PropertyInstance(..)
+                | Type::SlotDescriptor(..)
                 | Type::FunctionLiteral(..)
                 | Type::AlwaysTruthy
                 | Type::AlwaysFalsy
@@ -5918,6 +5880,7 @@ impl<'db> Type<'db> {
             Type::TypeAlias(alias) => alias.value_type(db).bindings(db, env),
 
             Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::AlwaysFalsy
             | Type::AlwaysTruthy
             | Type::BoundSuper(_)
@@ -7152,6 +7115,7 @@ impl<'db> Type<'db> {
             | Type::SpecialForm(_)
             | Type::KnownInstance(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::ModuleLiteral(_)
             | Type::LiteralValue(_)
             | Type::BoundSuper(_)
@@ -7229,6 +7193,7 @@ impl<'db> Type<'db> {
             | Type::BoundSuper(_)
             | Type::ProtocolInstance(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
             | Type::TypeForm(_)
@@ -7457,6 +7422,9 @@ impl<'db> Type<'db> {
             Type::SpecialForm(special_form) => special_form.to_meta_type(db, env),
             Type::PropertyInstance(property) => {
                 property.instance_class(db).to_class_literal(db, env)
+            }
+            Type::SlotDescriptor(descriptor) => {
+                descriptor.instance_class(db).to_class_literal(db, env)
             }
             Type::Union(union) => union.map(db, env, |ty| ty.to_meta_type(db, env)),
             Type::TypeIs(_) | Type::TypeGuard(_) => KnownClass::Bool.to_class_literal(db, env),
@@ -7835,6 +7803,14 @@ impl<'db> Type<'db> {
                 property.apply_type_mapping_impl(db, type_mapping, tcx, visitor),
             ),
 
+            Type::SlotDescriptor(descriptor) => Type::SlotDescriptor(SlotDescriptorType::new(
+                db,
+                descriptor
+                    .value_type(db)
+                    .apply_type_mapping_impl(db, type_mapping, tcx, visitor),
+                descriptor.kind(db),
+            )),
+
             Type::Union(union) => union.map_leave_aliases(db, visitor.env, |element| {
                 element.apply_type_mapping_impl(db, type_mapping, tcx, visitor)
             }),
@@ -8172,6 +8148,16 @@ impl<'db> Type<'db> {
 
             Type::PropertyInstance(property) => visitor.visit(db, self, || {
                 property.find_legacy_typevars_impl(db, env, binding_context, typevars, visitor);
+            }),
+
+            Type::SlotDescriptor(descriptor) => visitor.visit(db, self, || {
+                descriptor.value_type(db).find_legacy_typevars_impl(
+                    db,
+                    env,
+                    binding_context,
+                    typevars,
+                    visitor,
+                );
             }),
 
             Type::Union(union) => {
@@ -8553,6 +8539,10 @@ impl<'db> Type<'db> {
                         .deleter(db)
                         .and_then(|deleter| deleter.definition(db, env))
                 }),
+
+            Self::SlotDescriptor(descriptor) => {
+                descriptor.instance_fallback(db, env).definition(db, env)
+            }
 
             Self::LiteralValue(literal) => literal
                 .as_enum()
@@ -8995,6 +8985,16 @@ impl<'db> VarianceInferable<'db> for Type<'db> {
                 .chain(&property_instance_type.deleter(db))
                 .map(|ty| ty.variance_of(db, env, typevar))
                 .collect(),
+            Type::SlotDescriptor(descriptor) => {
+                let value_type = descriptor.value_type(db);
+                if descriptor.is_writable(db) {
+                    value_type
+                        .with_polarity(TypeVarVariance::Invariant)
+                        .variance_of(db, env, typevar)
+                } else {
+                    value_type.variance_of(db, env, typevar)
+                }
+            }
             Type::SubclassOf(subclass_of_type) => subclass_of_type.variance_of(db, env, typevar),
             Type::TypeIs(type_is_type) => type_is_type.variance_of(db, env, typevar),
             Type::TypeGuard(type_guard_type) => type_guard_type.variance_of(db, env, typevar),

@@ -2297,6 +2297,35 @@ x = Foo.prop
     }
 
     #[test]
+    fn slotted_attributes_are_not_properties() {
+        let test = SemanticTokenTest::new(
+            "
+class Slotted:
+    __slots__ = ('value', '__weakref__')
+    value: int
+
+descriptor = Slotted.value
+reference = Slotted.__weakref__
+instance = Slotted()
+stored = instance.value
+",
+        );
+
+        let tokens = test.highlight_file();
+        let source = ruff_db::source::source_text(&test.db, test.file);
+        let slot_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|token| matches!(&source[token.range()], "value" | "__weakref__"))
+            .collect();
+
+        assert_eq!(slot_tokens.len(), 4);
+        for token in slot_tokens {
+            assert_eq!(token.token_type, SemanticTokenType::Variable);
+            assert!(!token.modifiers.contains(SemanticTokenModifier::READONLY));
+        }
+    }
+
+    #[test]
     fn property_readonly_modifier() {
         // Verify that the readonly modifier is set for getter-only properties
         // and NOT set for properties that also have a setter.

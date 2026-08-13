@@ -658,7 +658,7 @@ impl<'db> StaticClassLiteral<'db> {
             && !self.is_protocol(db)
         {
             Some(DisjointBase::due_to_decorator(self))
-        } else if self.slot_names(db).is_some_and(|slots| !slots.is_empty()) {
+        } else if self.has_nonempty_slots(db) {
             Some(DisjointBase::due_to_dunder_slots(ClassLiteral::Static(
                 self,
             )))
@@ -1537,6 +1537,7 @@ impl<'db> StaticClassLiteral<'db> {
                     )
                     .place;
                     self.is_runtime_class_binding(db, name, binding)
+                        && self.has_runtime_slot_binding(db, name)
                 });
 
             if !has_runtime_class_binding || generated_slots {
@@ -1549,7 +1550,9 @@ impl<'db> StaticClassLiteral<'db> {
             }
         }
 
-        if member.is_undefined() {
+        if member.is_undefined()
+            || name == "__slots__" && self.has_generated_slots(db) && !self.has_explicit_slots(db)
+        {
             if let Some(synthesized_member) = self.own_synthesized_member(
                 db,
                 env,
@@ -2832,11 +2835,7 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> PlaceAndQualifiers<'db> {
-        if self.is_typed_dict(db)
-            || self.slot_names(db).is_some()
-                && !self.has_instance_slot(db, name)
-                && !self.has_instance_dictionary(db)
-        {
+        if self.is_typed_dict(db) || self.lacks_instance_storage(db, name) {
             return Place::Undefined.into();
         }
 
@@ -3858,7 +3857,7 @@ impl<'db> StaticClassLiteral<'db> {
                         )
                         // We don't allow mutation of methods or properties
                         || ty.is_function_literal()
-                        || ty.is_property_instance(db)
+                        || ty.is_property_instance()
                         // Underscore-prefixed attributes are assumed not to be externally mutated
                         || name.starts_with('_')
                     {

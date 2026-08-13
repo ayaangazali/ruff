@@ -284,6 +284,7 @@ pub(super) fn attribute_write_requirement<'db>(
         | Type::SpecialForm(..)
         | Type::KnownInstance(..)
         | Type::PropertyInstance(..)
+        | Type::SlotDescriptor(..)
         | Type::FunctionLiteral(..)
         | Type::Callable(..)
         | Type::BoundMethod(_)
@@ -393,15 +394,10 @@ fn instance_attribute_write_member_requirement<'db>(
                 member,
                 ExplicitAttributeWriteRequirement::AssignableTo { .. }
             ) && ty.is_definitely_non_data_descriptor(db, env)
-                && let Some((class, _)) = object_ty
+                && object_ty
                     .nominal_class(db, env)
                     .and_then(|class| class.static_class_literal(db))
-                && class.slot_names(db).is_some()
-                && !class.has_instance_dictionary(db)
-                && object_ty
-                    .instance_member(db, env, attribute)
-                    .place
-                    .is_undefined()
+                    .is_some_and(|(class, _)| class.lacks_instance_storage(db, attribute))
             {
                 return InstanceAttributeWriteMember::SetAttr;
             }
@@ -579,9 +575,7 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
-    if attr_ty.as_descriptor_instance().is_some_and(|descriptor| {
-        descriptor.is_slot_descriptor(db) && descriptor.setter(db).is_none()
-    }) {
+    if matches!(attr_ty, Type::SlotDescriptor(descriptor) if !descriptor.is_writable(db)) {
         return ExplicitAttributeWriteRequirement::ReadOnly { qualifiers };
     }
 
@@ -726,16 +720,14 @@ pub(super) fn property_setter_returns_never<'db>(
     object_ty: Type<'db>,
     value_ty: Type<'db>,
 ) -> bool {
-    property_ty
-        .as_property_instance(db)
-        .is_some_and(|property| {
-            property.setter(db).is_some_and(|setter| {
-                match setter.try_call(db, env, &CallArguments::positional([object_ty, value_ty])) {
-                    Ok(result) => result.return_type(db, env).is_never(),
-                    Err(error) => error.return_type(db, env).is_never(),
-                }
-            })
+    property_ty.as_property_instance().is_some_and(|property| {
+        property.setter(db).is_some_and(|setter| {
+            match setter.try_call(db, env, &CallArguments::positional([object_ty, value_ty])) {
+                Ok(result) => result.return_type(db, env).is_never(),
+                Err(error) => error.return_type(db, env).is_never(),
+            }
         })
+    })
 }
 
 /// Resolve class-object members when a class attribute can shadow its metaclass member.
@@ -840,6 +832,7 @@ pub(super) fn assignment_attribute_members<'db>(
             | Type::SpecialForm(..)
             | Type::KnownInstance(..)
             | Type::PropertyInstance(..)
+            | Type::SlotDescriptor(..)
             | Type::FunctionLiteral(..)
             | Type::Callable(..)
             | Type::BoundMethod(_)

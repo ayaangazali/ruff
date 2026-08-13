@@ -358,6 +358,7 @@ impl<'db> AllMembers<'db> {
 
             Type::LiteralValue(_)
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::FunctionLiteral(_)
             | Type::BoundMethod(_)
             | Type::KnownBoundMethod(_)

@@ -1725,6 +1725,35 @@ class DynamicExistingSlots:  # error: [invalid-dataclass] "Dataclass `DynamicExi
     __slots__ = choose_slots()
 ```
 
+A bare annotation does not bind `__slots__` in the runtime class namespace, so it does not prevent
+the dataclass from generating slots.
+
+```py
+from typing import ClassVar
+
+@dataclass(slots=True)
+class AnnotatedSlots:
+    __slots__: ClassVar[tuple[str, ...]]
+    value: int
+
+reveal_type(AnnotatedSlots.__slots__)  # revealed: tuple[Literal["value"]]
+```
+
+A definition inside a `TYPE_CHECKING` block also does not enter the runtime class namespace.
+
+```py
+from typing import TYPE_CHECKING
+
+@dataclass(slots=True)
+class TypeCheckingSlots:
+    value: int
+
+    if TYPE_CHECKING:
+        __slots__ = ("other",)
+
+reveal_type(TypeCheckingSlots.__slots__)  # revealed: tuple[Literal["value"]]
+```
+
 ### `weakref_slot`
 
 On Python 3.11 and later, `weakref_slot=True` creates a `__weakref__` descriptor on the dataclass.

@@ -287,7 +287,7 @@ pub(super) fn class_defines_property<'db>(
             .place
             .raw_type()
         {
-            return member.is_property_instance(db);
+            return member.is_property_instance();
         }
     }
 

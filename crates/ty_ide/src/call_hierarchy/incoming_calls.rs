@@ -60,7 +60,7 @@ pub fn incoming_calls(db: &dyn Db, file: ProgramFile<'_>, offset: TextSize) -> V
     let target_role = match &goto_target {
         GotoTarget::FunctionDef(function) => function
             .inferred_type(&model)
-            .and_then(|ty| ty.as_property_instance(db))
+            .and_then(Type::as_property_instance)
             .and_then(|property| property.accessor_role(db, function.definition(&model))),
         _ => None,
     };

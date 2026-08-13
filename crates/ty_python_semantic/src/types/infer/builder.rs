@@ -2843,16 +2843,14 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
     fn property_deleter_returns_never(&self, property_ty: Type<'db>, object_ty: Type<'db>) -> bool {
         let env = self.program_environment();
         let db = self.db();
-        property_ty
-            .as_property_instance(db)
-            .is_some_and(|property| {
-                property.deleter(db).is_some_and(|deleter| {
-                    match deleter.try_call(db, env, &CallArguments::positional([object_ty])) {
-                        Ok(result) => result.return_type(db, env).is_never(),
-                        Err(err) => err.return_type(db, env).is_never(),
-                    }
-                })
+        property_ty.as_property_instance().is_some_and(|property| {
+            property.deleter(db).is_some_and(|deleter| {
+                match deleter.try_call(db, env, &CallArguments::positional([object_ty])) {
+                    Ok(result) => result.return_type(db, env).is_never(),
+                    Err(err) => err.return_type(db, env).is_never(),
+                }
             })
+        })
     }
 
     fn validate_attribute_deletion(
@@ -2920,6 +2918,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             | Type::SubclassOf(..)
             | Type::KnownInstance(..)
             | Type::PropertyInstance(..)
+            | Type::SlotDescriptor(..)
             | Type::FunctionLiteral(..)
             | Type::Callable(..)
             | Type::BoundMethod(_)
@@ -3067,6 +3066,23 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     .and_then(AssignmentAttributeMembers::type_member)
                 {
                     let attr_ty = attr_ty.bind_self_typevars(db, env, object_ty);
+                    if let Type::SlotDescriptor(descriptor) = attr_ty {
+                        if descriptor.is_writable(db) {
+                            return true;
+                        }
+
+                        if emit_diagnostics
+                            && let Some(builder) =
+                                self.context.report_lint(&INVALID_ASSIGNMENT, target)
+                        {
+                            builder.into_diagnostic(format_args!(
+                                "Cannot delete read-only attribute `{attribute}` on object of type `{}`",
+                                object_ty.display(db, env),
+                            ));
+                        }
+                        return false;
+                    }
+
                     let delete_dunder_call_result = attr_ty.try_call_dunder(
                         db,
                         env,
@@ -5299,6 +5315,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::SpecialForm(_)
                 | Type::KnownInstance(_)
                 | Type::PropertyInstance(_)
+                | Type::SlotDescriptor(_)
                 | Type::AlwaysTruthy
                 | Type::AlwaysFalsy
                 | Type::LiteralValue(_)
@@ -10802,6 +10819,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 | Type::SpecialForm(_)
                 | Type::KnownInstance(_)
                 | Type::PropertyInstance(_)
+                | Type::SlotDescriptor(_)
                 | Type::Union(_)
                 | Type::Intersection(_)
                 | Type::EnumComplement(_)

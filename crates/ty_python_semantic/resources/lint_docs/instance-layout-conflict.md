@@ -66,10 +66,9 @@ class D(A, B, C): ...
 
 ## Known problems
 
-Classes whose slot names cannot be determined statically are not currently considered
-disjoint bases by ty. Static definitions can include string literals and literal tuples,
-lists, sets, or dictionaries of string literals, as long as a mutable container is not
-subsequently observed or modified in the class body.
+Classes whose `__slots__` values cannot be determined statically are not always considered
+disjoint bases by ty. Static definitions can include string literals, fixed-length tuples,
+and literal lists, sets, or dictionaries of string literals.
 
 Additionally, this check is not exhaustive: many C extensions (including several in
 the standard library) define classes that use extended memory layouts and thus cannot

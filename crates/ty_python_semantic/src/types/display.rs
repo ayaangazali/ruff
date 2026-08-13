@@ -34,9 +34,9 @@ use crate::types::visitor::TypeVisitor;
 use crate::types::{
     CallableType, IntersectionType, KnownBoundMethodType, KnownClass, KnownInstanceType,
     KnownUnion, LiteralValueType, LiteralValueTypeKind, MaterializationKind, PropertyInstanceType,
-    Protocol, SpecialFormType, StringLiteralType, SubclassOfInner, SubclassOfType, Type,
-    TypeAliasType, TypeGuardLike, TypedDictModule, TypedDictType, UnionType, WrapperDescriptorKind,
-    visitor,
+    Protocol, SlotDescriptorKind, SpecialFormType, StringLiteralType, SubclassOfInner,
+    SubclassOfType, Type, TypeAliasType, TypeGuardLike, TypedDictModule, TypedDictType, UnionType,
+    WrapperDescriptorKind, visitor,
 };
 use ty_python_core::ProgramFile;
 use ty_python_core::definition::Definition;
@@ -1013,12 +1013,11 @@ struct DisplayRepresentation<'env, 'db> {
     settings: DisplaySettings<'db>,
 }
 
-fn descriptor_display_name(db: &dyn Db, descriptor: PropertyInstanceType<'_>) -> &'static str {
-    match descriptor.instance_class(db) {
-        KnownClass::EnumProperty => "enum.property",
-        KnownClass::MemberDescriptorType => "MemberDescriptorType",
-        KnownClass::GetSetDescriptorType => "GetSetDescriptorType",
-        _ => "property",
+fn property_display_name(db: &dyn Db, property: PropertyInstanceType<'_>) -> &'static str {
+    if property.instance_class(db) == KnownClass::EnumProperty {
+        "enum.property"
+    } else {
+        "property"
     }
 }
 
@@ -1128,7 +1127,13 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
             },
             Type::PropertyInstance(property) => f
                 .with_type(self.ty)
-                .write_str(descriptor_display_name(db, property)),
+                .write_str(property_display_name(db, property)),
+            Type::SlotDescriptor(descriptor) => {
+                f.with_type(self.ty).write_str(match descriptor.kind(db) {
+                    SlotDescriptorKind::Member => "MemberDescriptorType",
+                    SlotDescriptorKind::WeakReference => "GetSetDescriptorType",
+                })
+            }
             Type::ModuleLiteral(module) => {
                 f.set_invalid_type_annotation();
                 f.write_char('<')?;
@@ -1294,7 +1299,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderGet(property) => (
                         property.instance_class(db),
                         "__get__",
-                        descriptor_display_name(db, property),
+                        property_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .getter(db)
@@ -1304,7 +1309,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderSet(property) => (
                         property.instance_class(db),
                         "__set__",
-                        descriptor_display_name(db, property),
+                        property_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .setter(db)
@@ -1314,7 +1319,7 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
                     KnownBoundMethodType::PropertyDunderDelete(property) => (
                         property.instance_class(db),
                         "__delete__",
-                        descriptor_display_name(db, property),
+                        property_display_name(db, property),
                         Type::PropertyInstance(property),
                         property
                             .deleter(db)

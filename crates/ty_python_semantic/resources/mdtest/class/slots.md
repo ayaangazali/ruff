@@ -923,20 +923,16 @@ class DeletedDefault:
     del value
 ```
 
-## `int`, `bytes`, and `tuple` subclasses cannot add slots
-
-Python rejects nonempty `__slots__` on subclasses of `int`, `bytes`, and `tuple`.
+A class variable defined only for type checking does not enter the runtime class namespace.
 
 ```py
-class SlottedInteger(int):  # error: [instance-layout-conflict]
+from typing import TYPE_CHECKING
+
+class TypeCheckingOnly:
     __slots__ = ("value",)
 
-class SlottedBytes(bytes):  # error: [instance-layout-conflict]
-    __slots__ = ("value",)
+    if TYPE_CHECKING:
+        value = 1
 
-class SlottedTuple(tuple[object, ...]):  # error: [instance-layout-conflict]
-    __slots__ = ("value",)
-
-class EmptyInteger(int):
-    __slots__ = ()
+reveal_type(TypeCheckingOnly.value)  # revealed: MemberDescriptorType
 ```

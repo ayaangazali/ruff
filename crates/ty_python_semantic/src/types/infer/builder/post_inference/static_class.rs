@@ -27,17 +27,17 @@ use crate::{
         diagnostic::{
             ABSTRACT_METHOD_IN_FINAL_CLASS, AbstractMethodAnnotationPolicy, CONFLICTING_METACLASS,
             CYCLIC_CLASS_DEFINITION, DATACLASS_FIELD_ORDER, DUPLICATE_KW_ONLY, FINAL_WITHOUT_VALUE,
-            INCONSISTENT_MRO, INSTANCE_LAYOUT_CONFLICT, INVALID_ARGUMENT_TYPE, INVALID_ASSIGNMENT,
-            INVALID_BASE, INVALID_DATACLASS, INVALID_GENERIC_CLASS, INVALID_GENERIC_ENUM,
-            INVALID_METACLASS, INVALID_NAMED_TUPLE, INVALID_PROTOCOL, INVALID_TYPED_DICT_HEADER,
-            IncompatibleBases, SUBCLASS_OF_DATACLASS_WITH_ORDER, SUBCLASS_OF_FINAL_CLASS,
-            UNKNOWN_ARGUMENT, report_bad_frozen_dataclass_inheritance,
-            report_conflicting_metaclass_from_bases, report_duplicate_bases,
-            report_inconsistent_generic_bases, report_instance_layout_conflict,
-            report_invalid_attribute_assignment, report_invalid_named_tuple_field_qualifier,
-            report_invalid_or_unsupported_base, report_invalid_total_ordering,
-            report_invalid_type_param_order, report_invalid_typevar_default_reference,
-            report_missing_type_arguments, report_named_tuple_field_with_leading_underscore,
+            INCONSISTENT_MRO, INVALID_ARGUMENT_TYPE, INVALID_ASSIGNMENT, INVALID_BASE,
+            INVALID_DATACLASS, INVALID_GENERIC_CLASS, INVALID_GENERIC_ENUM, INVALID_METACLASS,
+            INVALID_NAMED_TUPLE, INVALID_PROTOCOL, INVALID_TYPED_DICT_HEADER, IncompatibleBases,
+            SUBCLASS_OF_DATACLASS_WITH_ORDER, SUBCLASS_OF_FINAL_CLASS, UNKNOWN_ARGUMENT,
+            report_bad_frozen_dataclass_inheritance, report_conflicting_metaclass_from_bases,
+            report_duplicate_bases, report_inconsistent_generic_bases,
+            report_instance_layout_conflict, report_invalid_attribute_assignment,
+            report_invalid_named_tuple_field_qualifier, report_invalid_or_unsupported_base,
+            report_invalid_total_ordering, report_invalid_type_param_order,
+            report_invalid_typevar_default_reference, report_missing_type_arguments,
+            report_named_tuple_field_with_leading_underscore,
             report_namedtuple_field_without_default_after_field_with_default,
             report_shadowed_type_variable,
             report_subclass_of_class_with_non_callable_init_subclass, report_unsupported_base,
@@ -107,6 +107,10 @@ fn check_class_slots<'db>(
 
             for binding in use_def.end_of_scope_symbol_bindings(symbol) {
                 if let Some(definition) = binding.binding.definition()
+                    && !index.is_in_type_checking_block(
+                        scope_id,
+                        definition.kind(db).full_range(context.module()),
+                    )
                     && let Some(builder) = context.report_lint(
                         &INVALID_ASSIGNMENT,
                         definition.focus_range(db, context.module()),
@@ -118,25 +122,6 @@ fn check_class_slots<'db>(
                 }
             }
         }
-    }
-
-    if !slot_names.is_empty()
-        && let Some(base) = class.iter_mro(db, None).skip(1).find_map(|base| {
-            let class = base.into_class()?;
-            let (class, _) = class.static_class_literal(db)?;
-            matches!(
-                class.known(db),
-                Some(KnownClass::Int | KnownClass::Bytes | KnownClass::Tuple)
-            )
-            .then_some(class)
-        })
-        && let Some(builder) =
-            context.report_lint(&INSTANCE_LAYOUT_CONFLICT, class.header_range(db))
-    {
-        builder.into_diagnostic(format_args!(
-            "Subclasses of `{}` cannot have nonempty `__slots__`",
-            base.name(db)
-        ));
     }
 }
 

@@ -64,6 +64,22 @@ class AB(  # error: [instance-layout-conflict]
 ): ...
 ```
 
+## Slot names that are not statically known
+
+A nonempty tuple still creates a distinct instance layout when its individual slot names are not
+known.
+
+```py
+def create(name: str) -> None:
+    class A:
+        __slots__ = (name,)
+
+    class B:
+        __slots__ = ("value",)
+
+    class C(A, B): ...  # error: [instance-layout-conflict]
+```
+
 ## Synthesized `__slots__` from dataclasses
 
 ```py

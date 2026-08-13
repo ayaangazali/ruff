@@ -10,6 +10,7 @@ use self::named_tuple::synthesize_namedtuple_class_member;
 pub(super) use self::named_tuple::{
     DynamicNamedTupleAnchor, DynamicNamedTupleLiteral, NamedTupleField, NamedTupleSpec,
 };
+pub use self::slots::{SlotDescriptorKind, SlotDescriptorType};
 use self::static_literal::{AugmentedBindings, ImplicitAttribute};
 pub(crate) use self::static_literal::{
     ExpandedClassBaseEntry, FrozenDataclassDispatch, StaticClassLiteral,

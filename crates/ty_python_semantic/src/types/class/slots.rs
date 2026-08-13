@@ -1,22 +1,72 @@
 use itertools::Itertools;
 use ruff_db::parsed::parsed_module;
 use ruff_python_ast::{self as ast, PythonVersion, name::Name};
-use ty_python_core::{place_table, use_def_map};
+use ty_python_core::{
+    place_table, scope::ScopeId, semantic_index, symbol::ScopedSymbolId, use_def_map,
+};
 
 use crate::place::{DefinedPlace, Definedness, Place, place_from_bindings};
 use crate::types::class::{CodeGeneratorKind, StaticClassLiteral};
 use crate::types::generics::Specialization;
-use crate::types::{
-    ClassBase, DataclassFlags, KnownClass, Parameter, Parameters, PropertyInstanceType, Signature,
-    Type, UnionType,
-};
+use crate::types::{ClassBase, DataclassFlags, KnownClass, Type, UnionType};
 use crate::{Db, FxIndexSet, ProgramEnvironment};
 
-/// The statically known names declared by a class's own `__slots__` assignment.
+/// The information that can be recovered from a class's own `__slots__` assignment.
 #[derive(Debug, PartialEq, Eq, get_size2::GetSize, salsa::SalsaValue)]
 enum SlotDefinition {
+    /// Every declared slot name is statically known.
     Names(Box<[Name]>),
+    /// The declaration is definitely nonempty, but at least one name is unknown.
+    NonEmpty,
+    /// Neither the names nor the presence of any slots can be established.
     Dynamic,
+}
+
+/// The runtime descriptor created for an ordinary slot or the weak-reference slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, get_size2::GetSize, salsa::SalsaValue)]
+pub enum SlotDescriptorKind {
+    /// A writable `types.MemberDescriptorType` instance.
+    Member,
+    /// A read-only `types.GetSetDescriptorType` instance for `__weakref__`.
+    WeakReference,
+}
+
+/// An interpreter-created descriptor for an instance slot.
+///
+/// Unlike a Python property, an ordinary slot reads and writes its instance storage directly.
+/// The `__weakref__` slot instead exposes the instance's read-only weak-reference storage.
+#[salsa::interned(debug, heap_size=ruff_memory_usage::heap_size)]
+pub struct SlotDescriptorType<'db> {
+    #[returns(copy)]
+    pub(crate) value_type: Type<'db>,
+    #[returns(copy)]
+    pub(crate) kind: SlotDescriptorKind,
+}
+
+impl get_size2::GetSize for SlotDescriptorType<'_> {}
+
+impl<'db> SlotDescriptorType<'db> {
+    /// Returns the descriptor's actual runtime class.
+    pub(crate) fn instance_class(self, db: &'db dyn Db) -> KnownClass {
+        match self.kind(db) {
+            SlotDescriptorKind::Member => KnownClass::MemberDescriptorType,
+            SlotDescriptorKind::WeakReference => KnownClass::GetSetDescriptorType,
+        }
+    }
+
+    /// Returns the nominal descriptor type for operations unrelated to slot storage.
+    pub(crate) fn instance_fallback(
+        self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+    ) -> Type<'db> {
+        self.instance_class(db).to_instance(db, env)
+    }
+
+    /// Returns whether the descriptor permits writing and deleting its instance storage.
+    pub(crate) fn is_writable(self, db: &'db dyn Db) -> bool {
+        matches!(self.kind(db), SlotDescriptorKind::Member)
+    }
 }
 
 /// Whether the instance layout provides ordinary dictionary-backed attribute storage.
@@ -101,13 +151,43 @@ fn literal_slot_name(expression: &ast::Expr) -> Option<Name> {
         .map(|literal| Name::new(literal.value.to_str()))
 }
 
+/// Whether a class-body binding reaches class creation outside a `TYPE_CHECKING` block.
+#[salsa::tracked(returns(copy), heap_size=ruff_memory_usage::heap_size)]
+fn has_runtime_class_binding<'db>(
+    db: &'db dyn Db,
+    scope: ScopeId<'db>,
+    symbol: ScopedSymbolId,
+) -> bool {
+    let index = semantic_index(db, scope.program_file(db));
+    let module = parsed_module(db, scope.python_file(db)).load(db);
+
+    use_def_map(db, scope)
+        .end_of_scope_symbol_bindings(symbol)
+        .filter_map(|binding| binding.binding.definition())
+        .any(|definition| {
+            !index.is_in_type_checking_block(
+                scope.file_scope_id(db),
+                definition.kind(db).full_range(&module),
+            )
+        })
+}
+
 #[salsa::tracked]
 impl<'db> StaticClassLiteral<'db> {
     /// Returns whether this class body explicitly defines `__slots__`.
     pub(crate) fn has_explicit_slots(self, db: &'db dyn Db) -> bool {
-        place_table(db, self.body_scope(db))
+        let scope = self.body_scope(db);
+        place_table(db, scope)
             .symbol_id("__slots__")
-            .is_some()
+            .is_some_and(|symbol| has_runtime_class_binding(db, scope, symbol))
+    }
+
+    /// Returns whether a slot name is bound in the runtime class namespace.
+    pub(super) fn has_runtime_slot_binding(self, db: &'db dyn Db, name: &str) -> bool {
+        let scope = self.body_scope(db);
+        place_table(db, scope)
+            .symbol_id(name)
+            .is_some_and(|symbol| has_runtime_class_binding(db, scope, symbol))
     }
 
     /// Returns this class's explicit or generated slot names when they are statically known.
@@ -121,8 +201,18 @@ impl<'db> StaticClassLiteral<'db> {
 
         match self.slot_definition(db) {
             SlotDefinition::Names(names) => Some(names),
-            SlotDefinition::Dynamic => None,
+            SlotDefinition::NonEmpty | SlotDefinition::Dynamic => None,
         }
+    }
+
+    /// Returns whether this class definitely introduces at least one instance slot.
+    pub(super) fn has_nonempty_slots(self, db: &'db dyn Db) -> bool {
+        (self.has_explicit_slots(db) || self.has_generated_slots(db))
+            && match self.slot_definition(db) {
+                SlotDefinition::Names(names) => !names.is_empty(),
+                SlotDefinition::NonEmpty => true,
+                SlotDefinition::Dynamic => false,
+            }
     }
 
     /// Returns whether a dataclass decorator generates slots for this class.
@@ -145,7 +235,10 @@ impl<'db> StaticClassLiteral<'db> {
     )]
     fn slot_definition(self, db: &'db dyn Db) -> SlotDefinition {
         let body_scope = self.body_scope(db);
-        let Some(symbol) = place_table(db, body_scope).symbol_id("__slots__") else {
+        let Some(symbol) = place_table(db, body_scope)
+            .symbol_id("__slots__")
+            .filter(|_| self.has_explicit_slots(db))
+        else {
             if !self.has_generated_slots(db) {
                 return SlotDefinition::Dynamic;
             }
@@ -202,7 +295,7 @@ impl<'db> StaticClassLiteral<'db> {
                         .map(|literal| Name::new(literal.value(db)))
                 })
                 .collect::<Option<Box<[_]>>>()
-                .map_or(SlotDefinition::Dynamic, SlotDefinition::Names);
+                .map_or(SlotDefinition::NonEmpty, SlotDefinition::Names);
         }
 
         let Ok(definition) = use_def
@@ -308,6 +401,16 @@ impl<'db> StaticClassLiteral<'db> {
             .any(|slot| slot == name)
     }
 
+    /// Whether a known slotted layout has no instance storage available for `name`.
+    ///
+    /// An unknown layout remains permissive, as do builtins whose C-level storage is not fully
+    /// described by their stubs.
+    pub(crate) fn lacks_instance_storage(self, db: &'db dyn Db, name: &str) -> bool {
+        self.slot_names(db).is_some()
+            && !self.has_instance_slot(db, name)
+            && !self.has_instance_dictionary(db)
+    }
+
     /// Synthesizes the class descriptor created for an instance slot.
     ///
     /// ```python
@@ -333,51 +436,13 @@ impl<'db> StaticClassLiteral<'db> {
                 .map(|ty| ty.apply_optional_specialization(db, specialization))
                 .unwrap_or_else(Type::unknown)
         };
-        let descriptor_class = if weak_reference_slot {
-            KnownClass::GetSetDescriptorType
+        let kind = if weak_reference_slot {
+            SlotDescriptorKind::WeakReference
         } else {
-            KnownClass::MemberDescriptorType
+            SlotDescriptorKind::Member
         };
 
-        let getter = Type::single_callable(
-            db,
-            Signature::new(
-                Parameters::standard([Parameter::positional_only(Some(Name::new_static("self")))]),
-                value_ty,
-            ),
-        );
-        let setter = (!weak_reference_slot).then(|| {
-            Type::single_callable(
-                db,
-                Signature::new(
-                    Parameters::standard([
-                        Parameter::positional_only(Some(Name::new_static("self"))),
-                        Parameter::positional_only(Some(Name::new_static("value")))
-                            .with_annotated_type(value_ty),
-                    ]),
-                    Type::none(db, env),
-                ),
-            )
-        });
-        let deleter = (!weak_reference_slot).then(|| {
-            Type::single_callable(
-                db,
-                Signature::new(
-                    Parameters::standard([Parameter::positional_only(Some(Name::new_static(
-                        "self",
-                    )))]),
-                    Type::none(db, env),
-                ),
-            )
-        });
-
-        Type::PropertyInstance(PropertyInstanceType::new_slot(
-            db,
-            descriptor_class,
-            getter,
-            setter,
-            deleter,
-        ))
+        Type::SlotDescriptor(SlotDescriptorType::new(db, value_ty, kind))
     }
 
     /// Whether an inferred class-body binding represents an actual runtime class attribute.

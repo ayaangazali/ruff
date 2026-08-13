@@ -311,6 +311,7 @@ impl<'db> Type<'db> {
                 | KnownBoundMethodType::PropertyDunderDelete(_),
             )
             | Type::PropertyInstance(_)
+            | Type::SlotDescriptor(_)
             | Type::BoundSuper(_)
             | Type::TypeIs(_)
             | Type::TypeGuard(_)
@@ -2639,6 +2640,12 @@ impl<'a, 'c, 'db> TypeRelationChecker<'a, 'c, 'db> {
             (_, Type::PropertyInstance(property)) => {
                 self.check_type_pair(db, source, property.instance_fallback(db, env))
             }
+            (Type::SlotDescriptor(descriptor), _) => {
+                self.check_type_pair(db, descriptor.instance_fallback(db, env), target)
+            }
+            (_, Type::SlotDescriptor(descriptor)) => {
+                self.check_type_pair(db, source, descriptor.instance_fallback(db, env))
+            }
             // Other than the special cases enumerated above, nominal-instance types are never
             // subtypes of any other variants
             (Type::NominalInstance(_), _) => self.never(),
@@ -3786,6 +3793,11 @@ impl<'a, 'c, 'db> DisjointnessChecker<'a, 'c, 'db> {
             (Type::PropertyInstance(property), other)
             | (other, Type::PropertyInstance(property)) => nontrivial_check(self, || {
                 self.check_type_pair(db, property.instance_fallback(db, env), other)
+            }),
+
+            (Type::SlotDescriptor(descriptor), other)
+            | (other, Type::SlotDescriptor(descriptor)) => nontrivial_check(self, || {
+                self.check_type_pair(db, descriptor.instance_fallback(db, env), other)
             }),
 
             (Type::BoundSuper(left), Type::BoundSuper(right)) => nontrivial_check(self, || {
