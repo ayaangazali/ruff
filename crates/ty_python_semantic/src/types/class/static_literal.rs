@@ -1525,29 +1525,16 @@ impl<'db> StaticClassLiteral<'db> {
             && self
                 .slot_names(db)
                 .is_some_and(|slots| slots.iter().any(|slot| slot == name))
+            && (self.has_generated_slots(db)
+                || !self.has_runtime_class_binding(db, name)
+                || self.file(db).is_stub(db) && self.has_instance_slot(db, name))
         {
-            let generated_slots = self.has_generated_slots(db);
-            let has_runtime_class_binding = place_table(db, body_scope)
-                .symbol_id(name)
-                .is_some_and(|symbol| {
-                    let binding = place_from_bindings(
-                        db,
-                        env,
-                        use_def_map(db, body_scope).end_of_scope_symbol_bindings(symbol),
-                    )
-                    .place;
-                    self.is_runtime_class_binding(db, name, binding)
-                        && self.has_runtime_slot_binding(db, name)
-                });
-
-            if !has_runtime_class_binding || generated_slots {
-                return Member::definitely_declared(self.own_slot_descriptor(
-                    db,
-                    env,
-                    specialization,
-                    name,
-                ));
-            }
+            return Member::definitely_declared(self.own_slot_descriptor(
+                db,
+                env,
+                specialization,
+                name,
+            ));
         }
 
         if member.is_undefined()
@@ -3341,7 +3328,10 @@ impl<'db> StaticClassLiteral<'db> {
 
                     let bindings = use_def.end_of_scope_symbol_bindings(symbol_id);
                     let inferred = place_from_bindings(db, env, bindings).place;
-                    let has_binding = self.is_runtime_class_binding(db, name, inferred);
+                    // Stub assignments to slots describe instance storage, not runtime class
+                    // attributes.
+                    let has_binding = !(inferred.is_undefined()
+                        || self.file(db).is_stub(db) && self.has_instance_slot(db, name));
 
                     if has_binding {
                         // The attribute is declared and bound in the class body.

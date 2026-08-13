@@ -76,8 +76,9 @@ fn check_class_slots<'db>(
     index: &SemanticIndex<'db>,
 ) {
     let db = context.db();
+    let has_explicit_slots = class.has_explicit_slots(db);
 
-    if class.has_explicit_slots(db)
+    if has_explicit_slots
         && class
             .dataclass_params(db)
             .is_some_and(|parameters| parameters.flags(db).contains(DataclassFlags::SLOTS))
@@ -91,35 +92,37 @@ fn check_class_slots<'db>(
         return;
     }
 
+    if !has_explicit_slots || context.in_stub() {
+        return;
+    }
+
     let Some(slot_names) = class.slot_names(db) else {
         return;
     };
 
-    if class.has_explicit_slots(db) && !context.in_stub() {
-        let scope_id = class.body_scope(db).file_scope_id(db);
-        let table = index.place_table(scope_id);
-        let use_def = index.use_def_map(scope_id);
+    let scope_id = class.body_scope(db).file_scope_id(db);
+    let table = index.place_table(scope_id);
+    let use_def = index.use_def_map(scope_id);
 
-        for name in slot_names {
-            let Some(symbol) = table.symbol_id(name) else {
-                continue;
-            };
+    for name in slot_names {
+        let Some(symbol) = table.symbol_id(name) else {
+            continue;
+        };
 
-            for binding in use_def.end_of_scope_symbol_bindings(symbol) {
-                if let Some(definition) = binding.binding.definition()
-                    && !index.is_in_type_checking_block(
-                        scope_id,
-                        definition.kind(db).full_range(context.module()),
-                    )
-                    && let Some(builder) = context.report_lint(
-                        &INVALID_ASSIGNMENT,
-                        definition.focus_range(db, context.module()),
-                    )
-                {
-                    builder.into_diagnostic(format_args!(
-                        "Class variable `{name}` conflicts with an instance slot"
-                    ));
-                }
+        for binding in use_def.end_of_scope_symbol_bindings(symbol) {
+            if let Some(definition) = binding.binding.definition()
+                && !index.is_in_type_checking_block(
+                    scope_id,
+                    definition.kind(db).full_range(context.module()),
+                )
+                && let Some(builder) = context.report_lint(
+                    &INVALID_ASSIGNMENT,
+                    definition.focus_range(db, context.module()),
+                )
+            {
+                builder.into_diagnostic(format_args!(
+                    "Class variable `{name}` conflicts with an instance slot"
+                ));
             }
         }
     }

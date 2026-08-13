@@ -2057,26 +2057,6 @@ impl<'db> Type<'db> {
         }
     }
 
-    /// Whether assigning through this descriptor writes directly to instance storage.
-    ///
-    /// Unlike an arbitrary data descriptor, a writable slot stores the assigned value without
-    /// transforming it. Reads, writes, and assignment narrowing therefore use the receiver's
-    /// ordinary instance member.
-    fn writes_directly_to_instance_storage(self, db: &'db dyn Db) -> bool {
-        matches!(self, Type::SlotDescriptor(descriptor) if descriptor.is_writable(db))
-    }
-
-    /// Returns the receiver's instance member when this descriptor exposes that storage directly.
-    fn direct_instance_storage(
-        self,
-        db: &'db dyn Db,
-        instance_member: impl FnOnce() -> PlaceAndQualifiers<'db>,
-    ) -> Option<PlaceAndQualifiers<'db>> {
-        self.writes_directly_to_instance_storage(db)
-            .then(instance_member)
-            .filter(|member| !member.place.is_undefined())
-    }
-
     pub const fn as_class_literal(self) -> Option<ClassLiteral<'db>> {
         match self {
             Type::ClassLiteral(class_type) => Some(class_type),
@@ -4374,21 +4354,22 @@ impl<'db> Type<'db> {
         let meta_attr_error = meta_attr_error.map(MemberLookupErrorKind::DescriptorGet);
         let fallback_error = fallback.err().map(|error| error.kind(db));
         let fallback_member = fallback.unwrap_or_else(|error| error.fallback_member(db));
-        let direct_instance_storage = meta_attr_ty
-            .and_then(|descriptor| descriptor.direct_instance_storage(db, || fallback_member));
-        let PlaceAndQualifiers {
-            place: fallback,
-            qualifiers: fallback_qualifiers,
-        } = fallback_member;
 
         // A slot stores the same instance attribute described by the receiver's declarations.
         // Unlike an arbitrary data descriptor, its inherited getter must not hide a more precise
         // declaration established by the receiver's class.
         if matches!(meta_attr, Place::Defined(_))
-            && let Some(storage) = direct_instance_storage
+            && let Some(Type::SlotDescriptor(descriptor)) = meta_attr_ty
+            && descriptor.is_writable(db)
+            && !fallback_member.place.is_undefined()
         {
-            return member_lookup_result(db, storage, fallback_error);
+            return member_lookup_result(db, fallback_member, fallback_error);
         }
+
+        let PlaceAndQualifiers {
+            place: fallback,
+            qualifiers: fallback_qualifiers,
+        } = fallback_member;
 
         match (meta_attr, meta_attr_kind, fallback) {
             // The fallback type is unbound, so we can just return `meta_attr` unconditionally,

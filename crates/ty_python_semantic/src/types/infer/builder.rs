@@ -12319,7 +12319,7 @@ impl<'db, 'ast> AddBinding<'db, 'ast> {
                 .and_then(|member| member.place.ignore_possibly_undefined())
                 .is_some_and(|ty| {
                     ty.may_be_data_descriptor(db, env)
-                        && !ty.writes_directly_to_instance_storage(db)
+                        && !matches!(ty, Type::SlotDescriptor(descriptor) if descriptor.is_writable(db))
                 })
             {
                 builder.discard_dict_key_assignments_for(self.binding);

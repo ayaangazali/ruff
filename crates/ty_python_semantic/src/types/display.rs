@@ -34,9 +34,9 @@ use crate::types::visitor::TypeVisitor;
 use crate::types::{
     CallableType, IntersectionType, KnownBoundMethodType, KnownClass, KnownInstanceType,
     KnownUnion, LiteralValueType, LiteralValueTypeKind, MaterializationKind, PropertyInstanceType,
-    Protocol, SlotDescriptorKind, SpecialFormType, StringLiteralType, SubclassOfInner,
-    SubclassOfType, Type, TypeAliasType, TypeGuardLike, TypedDictModule, TypedDictType, UnionType,
-    WrapperDescriptorKind, visitor,
+    Protocol, SpecialFormType, StringLiteralType, SubclassOfInner, SubclassOfType, Type,
+    TypeAliasType, TypeGuardLike, TypedDictModule, TypedDictType, UnionType, WrapperDescriptorKind,
+    visitor,
 };
 use ty_python_core::ProgramFile;
 use ty_python_core::definition::Definition;
@@ -1128,12 +1128,11 @@ impl<'db> FmtDetailed<'db> for DisplayRepresentation<'_, 'db> {
             Type::PropertyInstance(property) => f
                 .with_type(self.ty)
                 .write_str(property_display_name(db, property)),
-            Type::SlotDescriptor(descriptor) => {
-                f.with_type(self.ty).write_str(match descriptor.kind(db) {
-                    SlotDescriptorKind::Member => "MemberDescriptorType",
-                    SlotDescriptorKind::WeakReference => "GetSetDescriptorType",
-                })
-            }
+            Type::SlotDescriptor(descriptor) => f.with_type(self.ty).write_str(
+                descriptor
+                    .instance_class(db)
+                    .name(self.env.python_version(db)),
+            ),
             Type::ModuleLiteral(module) => {
                 f.set_invalid_type_annotation();
                 f.write_char('<')?;

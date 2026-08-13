@@ -575,25 +575,27 @@ fn explicit_attribute_write_requirement<'db>(
     attr_ty: Type<'db>,
     qualifiers: TypeQualifiers,
 ) -> ExplicitAttributeWriteRequirement<'db> {
-    if matches!(attr_ty, Type::SlotDescriptor(descriptor) if !descriptor.is_writable(db)) {
-        return ExplicitAttributeWriteRequirement::ReadOnly { qualifiers };
-    }
+    if let Type::SlotDescriptor(descriptor) = attr_ty {
+        if !descriptor.is_writable(db) {
+            return ExplicitAttributeWriteRequirement::ReadOnly { qualifiers };
+        }
 
-    if let Some(PlaceAndQualifiers {
-        place: Place::Defined(DefinedPlace { ty, .. }),
-        qualifiers: storage_qualifiers,
-    }) = attr_ty.direct_instance_storage(db, || object_ty.instance_member(db, env, attribute))
-    {
-        return ExplicitAttributeWriteRequirement::AssignableTo {
-            ty: effective_write_type(
-                db,
-                env,
-                object_ty,
-                attribute,
-                ty.bind_self_typevars(db, env, object_ty),
-            ),
-            qualifiers: qualifiers.union(storage_qualifiers),
-        };
+        if let PlaceAndQualifiers {
+            place: Place::Defined(DefinedPlace { ty, .. }),
+            qualifiers: storage_qualifiers,
+        } = object_ty.instance_member(db, env, attribute)
+        {
+            return ExplicitAttributeWriteRequirement::AssignableTo {
+                ty: effective_write_type(
+                    db,
+                    env,
+                    object_ty,
+                    attribute,
+                    ty.bind_self_typevars(db, env, object_ty),
+                ),
+                qualifiers: qualifiers.union(storage_qualifiers),
+            };
+        }
     }
 
     if let Place::Defined(DefinedPlace { ty: setter_ty, .. }) = attr_ty

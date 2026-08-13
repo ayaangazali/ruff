@@ -153,11 +153,7 @@ fn literal_slot_name(expression: &ast::Expr) -> Option<Name> {
 
 /// Whether a class-body binding reaches class creation outside a `TYPE_CHECKING` block.
 #[salsa::tracked(returns(copy), heap_size=ruff_memory_usage::heap_size)]
-fn has_runtime_class_binding<'db>(
-    db: &'db dyn Db,
-    scope: ScopeId<'db>,
-    symbol: ScopedSymbolId,
-) -> bool {
+fn has_runtime_binding<'db>(db: &'db dyn Db, scope: ScopeId<'db>, symbol: ScopedSymbolId) -> bool {
     let index = semantic_index(db, scope.program_file(db));
     let module = parsed_module(db, scope.python_file(db)).load(db);
 
@@ -176,18 +172,15 @@ fn has_runtime_class_binding<'db>(
 impl<'db> StaticClassLiteral<'db> {
     /// Returns whether this class body explicitly defines `__slots__`.
     pub(crate) fn has_explicit_slots(self, db: &'db dyn Db) -> bool {
-        let scope = self.body_scope(db);
-        place_table(db, scope)
-            .symbol_id("__slots__")
-            .is_some_and(|symbol| has_runtime_class_binding(db, scope, symbol))
+        self.has_runtime_class_binding(db, "__slots__")
     }
 
-    /// Returns whether a slot name is bound in the runtime class namespace.
-    pub(super) fn has_runtime_slot_binding(self, db: &'db dyn Db, name: &str) -> bool {
+    /// Returns whether a name is bound in the runtime class namespace.
+    pub(super) fn has_runtime_class_binding(self, db: &'db dyn Db, name: &str) -> bool {
         let scope = self.body_scope(db);
         place_table(db, scope)
             .symbol_id(name)
-            .is_some_and(|symbol| has_runtime_class_binding(db, scope, symbol))
+            .is_some_and(|symbol| has_runtime_binding(db, scope, symbol))
     }
 
     /// Returns this class's explicit or generated slot names when they are statically known.
@@ -237,7 +230,7 @@ impl<'db> StaticClassLiteral<'db> {
         let body_scope = self.body_scope(db);
         let Some(symbol) = place_table(db, body_scope)
             .symbol_id("__slots__")
-            .filter(|_| self.has_explicit_slots(db))
+            .filter(|symbol| has_runtime_binding(db, body_scope, *symbol))
         else {
             if !self.has_generated_slots(db) {
                 return SlotDefinition::Dynamic;
@@ -427,34 +420,21 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         name: &str,
     ) -> Type<'db> {
-        let weak_reference_slot = name == "__weakref__";
-        let value_ty = if weak_reference_slot {
-            UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env))
+        let (value_ty, kind) = if name == "__weakref__" {
+            (
+                UnionType::from_two_elements(db, env, Type::any(), Type::none(db, env)),
+                SlotDescriptorKind::WeakReference,
+            )
         } else {
-            self.own_instance_member(db, env, name)
-                .ignore_possibly_undefined()
-                .map(|ty| ty.apply_optional_specialization(db, specialization))
-                .unwrap_or_else(Type::unknown)
-        };
-        let kind = if weak_reference_slot {
-            SlotDescriptorKind::WeakReference
-        } else {
-            SlotDescriptorKind::Member
+            (
+                self.own_instance_member(db, env, name)
+                    .ignore_possibly_undefined()
+                    .map(|ty| ty.apply_optional_specialization(db, specialization))
+                    .unwrap_or_else(Type::unknown),
+                SlotDescriptorKind::Member,
+            )
         };
 
         Type::SlotDescriptor(SlotDescriptorType::new(db, value_ty, kind))
-    }
-
-    /// Whether an inferred class-body binding represents an actual runtime class attribute.
-    ///
-    /// Stub annotations and ellipsis placeholders are bindings for inference, but an annotated
-    /// slot in a stub describes instance storage rather than a conflicting class-level default.
-    pub(super) fn is_runtime_class_binding(
-        self,
-        db: &'db dyn Db,
-        name: &str,
-        binding: Place<'db>,
-    ) -> bool {
-        !(binding.is_undefined() || self.file(db).is_stub(db) && self.has_instance_slot(db, name))
     }
 }
