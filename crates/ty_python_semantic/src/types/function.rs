@@ -1905,10 +1905,16 @@ fn report_invalid_union_type_elements<'db>(
     // When we have a secondary annotation pointing at the UnionType expression,
     // "the union" is unambiguous. Otherwise, spell out the union type in the message.
     let env = context.program_environment();
+
+    let types = [union_type, *first_invalid_element]
+        .into_iter()
+        .chain(other_invalid_elements.iter().copied());
+    let settings = DisplaySettings::from_possibly_ambiguous_types(context, types);
+
     let union_suffix = match (&union_type_expr, union_type) {
         (None, Type::KnownInstance(KnownInstanceType::UnionType(instance))) => {
             match instance.union_type(db) {
-                Ok(ty) => format!(" `{}`", ty.display(db, env)),
+                Ok(ty) => format!(" `{}`", ty.display_with(db, env, settings.clone())),
                 Err(_) => String::new(),
             }
         }
@@ -1918,16 +1924,16 @@ fn report_invalid_union_type_elements<'db>(
     match other_invalid_elements {
         [] => diagnostic.info(format_args!(
             "Element `{}` in the union{union_suffix} is not a class object",
-            first_invalid_element.display(db, env)
+            first_invalid_element.display_with(db, env, settings)
         )),
         [single] => diagnostic.info(format_args!(
             "Elements `{}` and `{}` in the union{union_suffix} are not class objects",
-            first_invalid_element.display(db, env),
-            single.display(db, env),
+            first_invalid_element.display_with(db, env, settings.clone()),
+            single.display_with(db, env, settings),
         )),
         _ => diagnostic.info(format_args!(
             "Element `{}` in the union{union_suffix}, and {} more elements, are not class objects",
-            first_invalid_element.display(db, env),
+            first_invalid_element.display_with(db, env, settings),
             other_invalid_elements.len(),
         )),
     }
@@ -2518,9 +2524,12 @@ impl KnownFunction {
                     &ASSERT_TYPE_UNSPELLABLE_SUBTYPE
                 };
                 if let Some(builder) = context.report_lint(diagnostic, call_expression) {
+                    let types = [*actual_ty, asserted_ty];
+                    let settings = DisplaySettings::from_possibly_ambiguous_types(context, types);
+
                     let mut diagnostic = builder.into_diagnostic(format_args!(
                         "Argument does not have asserted type `{}`",
-                        asserted_ty.display(db, env),
+                        asserted_ty.display_with(db, env, settings.clone()),
                     ));
 
                     diagnostic.annotate(
@@ -2532,28 +2541,28 @@ impl KnownFunction {
                         )
                         .message(format_args!(
                             "Inferred type is `{}`",
-                            actual_ty.display(db, env)
+                            actual_ty.display_with(db, env, settings.clone())
                         )),
                     );
 
                     if actual_ty.is_subtype_of(db, env, asserted_ty) {
                         diagnostic.info(format_args!(
                             "`{inferred_type}` is a subtype of `{asserted_type}`, but they are not equivalent",
-                            asserted_type = asserted_ty.display(db, env),
-                            inferred_type = actual_ty.display(db, env),
+                            asserted_type = asserted_ty.display_with(db, env, settings.clone()),
+                            inferred_type = actual_ty.display_with(db, env, settings.clone()),
                         ));
                     } else {
                         diagnostic.info(format_args!(
                             "`{asserted_type}` and `{inferred_type}` are not equivalent types",
-                            asserted_type = asserted_ty.display(db, env),
-                            inferred_type = actual_ty.display(db, env),
+                            asserted_type = asserted_ty.display_with(db, env, settings.clone()),
+                            inferred_type = actual_ty.display_with(db, env, settings.clone()),
                         ));
                     }
 
                     diagnostic.set_concise_message(format_args!(
                         "Type `{}` does not match asserted type `{}`",
-                        actual_ty.display(db, env),
-                        asserted_ty.display(db, env),
+                        actual_ty.display_with(db, env, settings.clone()),
+                        asserted_ty.display_with(db, env, settings),
                     ));
                 }
             }
@@ -2796,8 +2805,7 @@ impl KnownFunction {
                     );
                     let mut message = String::new();
                     let display_settings = DisplaySettings::from_possibly_ambiguous_types(
-                        db,
-                        env,
+                        context,
                         classes
                             .iter()
                             .flat_map(|class| class.iter_mro(db))

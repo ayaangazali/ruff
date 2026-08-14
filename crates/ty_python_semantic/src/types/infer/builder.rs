@@ -115,8 +115,8 @@ use crate::types::typevar::{
 use crate::types::unpacker::UnpackResult;
 use crate::types::{
     BindingContext, BoundTypeVarInstance, CallDunderError, CallableBinding, CallableType,
-    CallableTypes, ClassType, DynamicType, InferenceFlags, InternedConstraintSet, InternedType,
-    IntersectionBuilder, IntersectionType, KnownClass, KnownInstanceType, KnownUnion,
+    CallableTypes, ClassType, DisplaySettings, DynamicType, InferenceFlags, InternedConstraintSet,
+    InternedType, IntersectionBuilder, IntersectionType, KnownClass, KnownInstanceType, KnownUnion,
     LiteralValueType, LiteralValueTypeKind, MemberLookupPolicy, ParamSpecAttrKind, Parameter,
     Parameters, ProgramEnvironment, SentinelInstance, Signature, SpecialFormType, SubclassOfType,
     Type, TypeAliasType, TypeAndQualifiers, TypeContext, TypeQualifiers, TypeVarBoundOrConstraints,
@@ -1442,9 +1442,18 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             // TODO point out the conflicting declarations in the diagnostic?
             let place = place_table.place(binding.place(db));
             if let Some(builder) = self.context.report_lint(&CONFLICTING_DECLARATIONS, node) {
+                let conflicting = conflicting.iter();
+                let settings = DisplaySettings::from_possibly_ambiguous_types(
+                    &self.context,
+                    conflicting.clone(),
+                );
                 builder.into_diagnostic(format_args!(
                     "Conflicting declared types for `{place}`: {}",
-                    format_enumeration(conflicting.iter().map(|ty| ty.display(db, env)))
+                    format_enumeration(conflicting.map(|ty| ty.display_with(
+                        db,
+                        env,
+                        settings.clone()
+                    )))
                 ));
             }
         }
@@ -1661,10 +1670,15 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             ty
         } else {
             if let Some(builder) = self.context.report_lint(&INVALID_DECLARATION, node) {
+                let declared_ty = ty.inner_type();
+                let settings = DisplaySettings::from_possibly_ambiguous_types(
+                    &self.context,
+                    [declared_ty, inferred_ty],
+                );
                 builder.into_diagnostic(format_args!(
                     "Cannot declare type `{}` for inferred type `{}`",
-                    ty.inner_type().display(db, env),
-                    inferred_ty.display(db, env)
+                    declared_ty.display_with(db, env, settings.clone()),
+                    inferred_ty.display_with(db, env, settings)
                 ));
             }
             TypeAndQualifiers::declared(Type::unknown())
@@ -4198,10 +4212,13 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         .context
                         .report_lint(&INVALID_ASSIGNMENT, value.as_deref().unwrap())
                     {
+                        let types = [value_ty, declared_ty];
+                        let settings =
+                            DisplaySettings::from_possibly_ambiguous_types(&self.context, types);
                         let mut diag = builder.into_diagnostic(format_args!(
                             "Object of type `{}` is not assignable to `{}`",
-                            value_ty.display(db, env),
-                            declared_ty.display(db, env),
+                            value_ty.display_with(db, env, settings.clone()),
+                            declared_ty.display_with(db, env, settings.clone()),
                         ));
                         diag.annotate(
                             self.context
@@ -4210,7 +4227,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         );
                         diag.set_primary_annotation_message(format_args!(
                             "Incompatible value of type `{}`",
-                            value_ty.display(db, env),
+                            value_ty.display_with(db, env, settings),
                         ));
                     }
                     declared_ty
@@ -10422,9 +10439,17 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                             if let Some(builder) =
                                 self.context.report_lint(&UNRESOLVED_ATTRIBUTE, attribute)
                             {
+                                let types = std::iter::once(union_like_type)
+                                    .chain(elements_missing_the_attribute.iter().copied());
+                                let settings = DisplaySettings::from_possibly_ambiguous_types(
+                                    &self.context,
+                                    types,
+                                );
                                 let missing_types = elements_missing_the_attribute
                                     .iter()
-                                    .map(|ty| format!("`{}`", ty.display(db, env)))
+                                    .map(|ty| {
+                                        format!("`{}`", ty.display_with(db, env, settings.clone()))
+                                    })
                                     .collect::<Vec<_>>()
                                     .join(", ");
 
@@ -10432,7 +10457,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                     "Attribute `{attr_name}` is not defined on {} \
                                     in union `{union_like_type}`",
                                     missing_types,
-                                    union_like_type = union_like_type.display(db, env),
+                                    union_like_type =
+                                        union_like_type.display_with(db, env, settings),
                                 ));
                             }
                             return type_when_bound;

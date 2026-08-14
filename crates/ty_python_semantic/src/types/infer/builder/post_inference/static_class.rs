@@ -14,9 +14,10 @@ use crate::{
     diagnostic::format_enumeration,
     place::{DefinedPlace, Place, TypeOrigin, place_from_bindings, place_from_declarations},
     types::{
-        CallArguments, ClassBase, ClassLiteral, ClassType, DataclassFlags, KnownClass,
-        KnownInstanceType, MemberLookupPolicy, MetaclassCandidate, Parameters, Signature,
-        SpecialFormType, StaticClassLiteral, Type, TypeVarVariance, TypedDictModule, binding_type,
+        CallArguments, ClassBase, ClassLiteral, ClassType, DataclassFlags, DisplaySettings,
+        KnownClass, KnownInstanceType, MemberLookupPolicy, MetaclassCandidate, Parameters,
+        Signature, SpecialFormType, StaticClassLiteral, Type, TypeVarVariance, TypedDictModule,
+        binding_type,
         call::Argument,
         class::{
             AbstractMethod, CodeGeneratorKind, Field, FieldKind, MetaclassErrorKind,
@@ -491,13 +492,15 @@ pub(crate) fn check_static_class_definitions<'db>(
                 if let Some(builder) =
                     context.report_lint(&INCONSISTENT_MRO, class.header_range(db))
                 {
+                    let settings =
+                        DisplaySettings::from_possibly_ambiguous_types(context, bases_list);
                     let mut diagnostic = builder.into_diagnostic(format_args!(
                         "Cannot create a consistent method resolution order (MRO) \
                                     for class `{}` with bases list `[{}]`",
                         class.name(db),
                         bases_list
                             .iter()
-                            .map(|base| base.display(db, env))
+                            .map(|base| base.display_with(db, env, settings.clone()))
                             .join(", ")
                     ));
                     let can_rewrite_bases = bases_list.len() == class_node.bases().len()
@@ -642,13 +645,20 @@ pub(crate) fn check_static_class_definitions<'db>(
                         class_node.into(),
                         class.name(db),
                         *metaclass1,
-                        class1.name(db),
+                        ClassBase::Class(ClassType::NonGeneric(ClassLiteral::from(*class1))),
                         *metaclass2,
-                        class2.name(db),
+                        ClassBase::Class(ClassType::NonGeneric(ClassLiteral::from(*class2))),
                     );
                 } else if let Some(builder) =
                     context.report_lint(&CONFLICTING_METACLASS, class_node)
                 {
+                    let types = [
+                        Type::from(*metaclass1),
+                        Type::from(*metaclass2),
+                        Type::from(*class2),
+                    ];
+                    let settings = DisplaySettings::from_possibly_ambiguous_types(context, types);
+
                     builder.into_diagnostic(format_args!(
                         "The metaclass of a derived class (`{class}`) \
                             must be a subclass of the metaclasses of all its bases, \
@@ -656,9 +666,13 @@ pub(crate) fn check_static_class_definitions<'db>(
                             and `{metaclass_of_base}` (metaclass of base class `{base}`) \
                             have no subclass relationship",
                         class = class.name(db),
-                        metaclass_of_class = metaclass1.name(db),
-                        metaclass_of_base = metaclass2.name(db),
-                        base = class2.name(db),
+                        metaclass_of_class = metaclass1
+                            .class_literal(db)
+                            .display_with(db, settings.clone()),
+                        metaclass_of_base = metaclass2
+                            .class_literal(db)
+                            .display_with(db, settings.clone()),
+                        base = ClassLiteral::Static(*class2).display_with(db, settings),
                     ));
                 }
             }

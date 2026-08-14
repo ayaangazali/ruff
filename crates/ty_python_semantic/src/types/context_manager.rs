@@ -3,10 +3,11 @@ use crate::ProgramEnvironment;
 use crate::{
     FxOrderSet,
     types::{
-        Bindings, CallArguments, CallDunderError, Type, TypeContext, call::CallErrorKind,
-        context::InferContext, diagnostic::INVALID_CONTEXT_MANAGER,
+        Bindings, CallArguments, CallDunderError, DisplaySettings, Type, TypeContext,
+        call::CallErrorKind, context::InferContext, diagnostic::INVALID_CONTEXT_MANAGER,
     },
 };
+use itertools::Either;
 use ruff_python_ast as ast;
 use ty_python_core::EvaluationMode;
 
@@ -193,6 +194,14 @@ impl<'db> NonAwaitableMethods<'db> {
             Self::Enter(enter) => vec![(enter_method, *enter)],
             Self::Exit(exit) => vec![(exit_method, *exit)],
             Self::Both { enter, exit } => vec![(enter_method, *enter), (exit_method, *exit)],
+        }
+    }
+
+    fn return_types(&self) -> impl Iterator<Item = Type<'db>> {
+        match self {
+            Self::Enter(enter) => Either::Left(std::iter::once(*enter)),
+            Self::Exit(exit) => Either::Left(std::iter::once(*exit)),
+            Self::Both { enter, exit } => Either::Right([*enter, *exit].into_iter()),
         }
     }
 
@@ -385,9 +394,31 @@ impl<'db> ContextManagerError<'db> {
             EvaluationMode::Async => "async with",
         };
 
+        // Although there is only one context-expression type, it might be a union
+        // containing distinct classes that have the same name, such as
+        // `a.Context | b.Context`. Formatting that union itself will automatically qualify
+        // both class names even with the default display settings. However, in subdiagnostics
+        // we proceed to print each individual member of the union, and an individual failing
+        // member separately printed with the default display settings would lose the context
+        // needed to distinguish it from the other member with the same unqualified name. We
+        // therefore share the union's display settings with the subdiagnostic notes a few
+        // lines below so they identify the failing member as `b.Context` rather than
+        // ambiguously referring to `Context`. A non-awaitable return type can also have
+        // the same name as the context manager itself, so include those return types too.
+        let non_awaitable = match self {
+            Self::NotAwaitable { non_awaitable, .. } => Some(non_awaitable),
+            _ => None,
+        };
+        let types = std::iter::once(context_expression_type).chain(
+            non_awaitable
+                .into_iter()
+                .flat_map(NonAwaitableMethods::return_types),
+        );
+        let settings = DisplaySettings::from_possibly_ambiguous_types(context, types);
+
         let mut diag = builder.into_diagnostic(format_args!(
             "Object of type `{}` cannot be used with `{}` because {}",
-            context_expression_type.display(db, env),
+            context_expression_type.display_with(db, env, settings.clone()),
             with_kw,
             formatted_errors,
         ));
@@ -398,7 +429,7 @@ impl<'db> ContextManagerError<'db> {
                 for ty in &exit_unbound_on {
                     diag.info(format_args!(
                         "`{}` does not implement `{exit_method}`",
-                        ty.display(db, env)
+                        ty.display_with(db, env, settings.clone())
                     ));
                 }
             }
@@ -407,7 +438,7 @@ impl<'db> ContextManagerError<'db> {
                 for ty in &enter_unbound_on {
                     diag.info(format_args!(
                         "`{}` does not implement `{enter_method}`",
-                        ty.display(db, env)
+                        ty.display_with(db, env, settings.clone())
                     ));
                 }
             }
@@ -423,12 +454,12 @@ impl<'db> ContextManagerError<'db> {
                     if exit_unbound_on.contains(ty) {
                         diag.info(format_args!(
                             "`{}` does not implement `{enter_method}` or `{exit_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     } else {
                         diag.info(format_args!(
                             "`{}` does not implement `{enter_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     }
                 }
@@ -437,7 +468,7 @@ impl<'db> ContextManagerError<'db> {
                     if !enter_unbound_on.contains(ty) {
                         diag.info(format_args!(
                             "`{}` does not implement `{exit_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     }
                 }
@@ -459,12 +490,12 @@ impl<'db> ContextManagerError<'db> {
                     if exit_unbound_on.contains(ty) {
                         diag.info(format_args!(
                             "`{}` does not implement `{enter_method}` or `{exit_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     } else {
                         diag.info(format_args!(
                             "`{}` does not implement `{enter_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     }
                 }
@@ -473,7 +504,7 @@ impl<'db> ContextManagerError<'db> {
                     if !enter_unbound_on.contains(ty) {
                         diag.info(format_args!(
                             "`{}` does not implement `{exit_method}`",
-                            ty.display(db, env)
+                            ty.display_with(db, env, settings.clone())
                         ));
                     }
                 }
@@ -483,7 +514,7 @@ impl<'db> ContextManagerError<'db> {
                 {
                     diag.info(format_args!(
                         "`{method}` returns `{}`, which is not awaitable",
-                        return_type.display(db, env)
+                        return_type.display_with(db, env, settings.clone())
                     ));
                 }
                 if non_awaitable.is_both() {
@@ -524,7 +555,7 @@ impl<'db> ContextManagerError<'db> {
         {
             diag.info(format_args!(
                 "Objects of type `{}` can be used as {} context managers",
-                context_expression_type.display(db, env),
+                context_expression_type.display_with(db, env, settings),
                 alt_mode
             ));
             diag.info(format!("Consider using `{alt_with_kw}` here"));
