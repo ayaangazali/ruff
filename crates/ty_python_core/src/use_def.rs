@@ -1943,7 +1943,10 @@ pub(super) struct UseDefMapBuilder<'db> {
     is_class_scope: bool,
 
     /// Whether reachability predicates should also preserve narrowing across branches.
-    is_function_scope: bool,
+    ///
+    /// This is disabled inside module- and class-scope loops, where loop-carried forward
+    /// references can otherwise introduce cycles through their narrowing predicates.
+    reachability_narrowing_enabled: bool,
 }
 
 impl<'db> UseDefMapBuilder<'db> {
@@ -1970,8 +1973,16 @@ impl<'db> UseDefMapBuilder<'db> {
             enclosing_snapshots: EnclosingSnapshots::default(),
             loop_headers: IndexVec::new(),
             is_class_scope: scope_kind.is_class(),
-            is_function_scope: matches!(scope_kind, ScopeKind::Function | ScopeKind::Lambda),
+            reachability_narrowing_enabled: matches!(
+                scope_kind,
+                ScopeKind::Module | ScopeKind::Class | ScopeKind::Function | ScopeKind::Lambda
+            ),
         }
+    }
+
+    /// Sets whether reachability also creates narrowing gates, returning the previous setting.
+    pub(super) fn replace_reachability_narrowing(&mut self, enabled: bool) -> bool {
+        std::mem::replace(&mut self.reachability_narrowing_enabled, enabled)
     }
 
     pub(super) fn reserve_loop_header(&mut self) -> LoopHeaderId {
@@ -2432,7 +2443,7 @@ impl<'db> UseDefMapBuilder<'db> {
         &mut self,
         reachability_constraint: ScopedReachabilityConstraintId,
     ) {
-        let narrowing_constraint = if self.is_function_scope {
+        let narrowing_constraint = if self.reachability_narrowing_enabled {
             self.reachability_constraints
                 .narrowing_gate(reachability_constraint, &mut self.narrowing_constraints)
         } else {
