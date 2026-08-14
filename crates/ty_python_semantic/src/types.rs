@@ -3339,8 +3339,28 @@ impl<'db> Type<'db> {
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         key: MemberLookupKey<'db>,
+        receiver: Type<'db>,
     ) -> PlaceAndQualifiers<'db> {
         let ty = key.ty(db);
+
+        // `object.__dict__` is a typeshed approximation: a concrete slotted instance without
+        // dictionary storage does not inherit that attribute at runtime. Keep normal lookup for
+        // `Self` and other type variables because their subclasses can introduce a dictionary.
+        let key = if key.name(db) == "__dict__"
+            && let Type::NominalInstance(instance) = receiver
+            && let Some((class, _)) = instance.class(db, env).static_class_literal(db)
+            && class.lacks_instance_storage(db, "__dict__")
+        {
+            MemberLookupKey::new(
+                db,
+                key.program(db),
+                ty,
+                key.name(db).as_str(),
+                key.policy(db) | MemberLookupPolicy::MRO_NO_OBJECT_FALLBACK,
+            )
+        } else {
+            key
+        };
 
         if let Type::TypeVar(_) = ty {
             if let Some(class) = ty.nominal_class(db, env) {
@@ -4320,7 +4340,8 @@ impl<'db> Type<'db> {
         fallback: MemberLookupResult<'db>,
         policy: InstanceFallbackShadowsNonDataDescriptor,
     ) -> MemberLookupResult<'db> {
-        let meta_attr_plain = Self::instance_lookup_class_member_with_policy(db, env, key);
+        let meta_attr_plain =
+            Self::instance_lookup_class_member_with_policy(db, env, key, receiver);
         let meta_attr_ty = meta_attr_plain.place.ignore_possibly_undefined();
         // A TypeVar retains its class identity when lookup is delegated to its bound, including
         // after narrowing. Narrowing can also add an unrelated class to a mixin's `Self`, in which
