@@ -40,7 +40,7 @@ use crate::rules::pandas_vet::helpers::{Resolution, test_expression};
 /// - [Pandas documentation: `isnull`](https://pandas.pydata.org/docs/reference/api/pandas.isnull.html#pandas.isnull)
 /// - [Pandas documentation: `isna`](https://pandas.pydata.org/docs/reference/api/pandas.isna.html#pandas.isna)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "v0.0.188", category = "pedantic")]
+#[violation_metadata(stable_since = "v0.0.188", category = "style")]
 pub(crate) struct PandasUseOfDotIsNull;
 
 impl Violation for PandasUseOfDotIsNull {
@@ -81,7 +81,7 @@ impl Violation for PandasUseOfDotIsNull {
 /// - [Pandas documentation: `notnull`](https://pandas.pydata.org/docs/reference/api/pandas.notnull.html#pandas.notnull)
 /// - [Pandas documentation: `notna`](https://pandas.pydata.org/docs/reference/api/pandas.notna.html#pandas.notna)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "v0.0.188", category = "pedantic")]
+#[violation_metadata(stable_since = "v0.0.188", category = "style")]
 pub(crate) struct PandasUseOfDotNotNull;
 
 impl Violation for PandasUseOfDotNotNull {

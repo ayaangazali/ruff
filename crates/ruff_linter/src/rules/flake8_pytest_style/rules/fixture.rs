@@ -628,7 +628,7 @@ impl AlwaysFixableViolation for PytestErroneousUseFixturesOnFixture {
 /// ## References
 /// - [PyPI: `pytest-asyncio`](https://pypi.org/project/pytest-asyncio/)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "v0.0.208", category = "pedantic")]
+#[violation_metadata(stable_since = "v0.0.208", category = "correctness")]
 pub(crate) struct PytestUnnecessaryAsyncioMarkOnFixture;
 
 impl AlwaysFixableViolation for PytestUnnecessaryAsyncioMarkOnFixture {
