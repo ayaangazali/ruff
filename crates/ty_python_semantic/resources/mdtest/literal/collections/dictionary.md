@@ -326,6 +326,27 @@ def _(y: Y):
     f1(**y.inner)
 ```
 
+## Structural type-context preferences retain graduality
+
+A structural type context can infer a gradual lower bound and a static upper bound before dictionary
+values contribute their constraints. The preliminary solution retains the gradual lower bound.
+
+```py
+from typing import Any, Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+
+class DictLike(Protocol[T_co]):
+    def __getitem__(self, key: str, /) -> T_co: ...
+    def __setitem__(self, key: str, value: Any, /) -> None: ...
+
+class Command: ...
+
+def _(command: Any):
+    # revealed: dict[str, Any]
+    mapping: DictLike[type[Command]] = reveal_type({"command": command})
+```
+
 ## Rejected annotations in stubs
 
 Annotation-only declarations in stubs are also bindings. A rejected annotation should fall back to

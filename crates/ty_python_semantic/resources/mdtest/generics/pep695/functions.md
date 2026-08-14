@@ -913,6 +913,113 @@ def g[T: A](b: B[T]):
     return f(b.x)  # Fine
 ```
 
+## Inferred upper bounds restrict gradual solutions
+
+A gradual lower bound and an inferred static upper bound produce an intersection. The solution
+retains only gradual materializations that satisfy the upper bound.
+
+```py
+from collections.abc import Iterable
+from typing import Any, Callable
+from ty_extensions._internal import Unknown
+
+def infer[T](lower: T, upper: Callable[[T], None]) -> T:
+    return lower
+
+def _(any_value: Any, unknown_value: Unknown, upper: Callable[[int], None]):
+    reveal_type(infer(any_value, upper))  # revealed: int & Any
+    reveal_type(infer(unknown_value, upper))  # revealed: int & Unknown
+```
+
+The inferred upper bound is also retained when an invariant return type triggers promotion:
+
+```py
+def infer_list[T](lower: T, upper: Callable[[T], None]) -> list[T]:
+    return [lower]
+
+def _(any_value: Any, upper: Callable[[int], None]):
+    reveal_type(infer_list(any_value, upper))  # revealed: list[int & Any]
+```
+
+The same restriction applies when a type variable occurs in a callable's parameter and return types:
+
+```py
+class Base: ...
+class Derived(Base): ...
+
+def predicate(value: Derived) -> bool:
+    return True
+
+def gradual_rule(value: Derived) -> Unknown:
+    raise NotImplementedError
+
+def condition[T](predicate: Callable[[T], bool], rule: Callable[[T], T]) -> Callable[[T], T]:
+    raise NotImplementedError
+
+def combine_rules[T](*rules: Callable[[T], T]) -> Callable[[T], T]:
+    raise NotImplementedError
+
+reveal_type(condition(predicate, gradual_rule))  # revealed: (Derived & Unknown, /) -> Derived & Unknown
+```
+
+Two invariant callable arguments still require the same solution:
+
+```py
+def _(rule: Callable[[Unknown | Base], Unknown | Base]):
+    # error: [invalid-argument-type]
+    combine_rules(rule, condition(predicate, gradual_rule))
+```
+
+When the lower bound is a union, only its gradual alternatives are restricted:
+
+```py
+class A: ...
+class B: ...
+class Result(A): ...
+
+def reduce[T](function: Callable[[T, T], T], values: Iterable[T]) -> T:
+    raise NotImplementedError
+
+def combine(left: A | B, right: A | B) -> Result:
+    raise NotImplementedError
+
+def _(values: Iterable[Any]):
+    # revealed: Result | (A & Any) | (B & Any)
+    reveal_type(reduce(combine, values))
+```
+
+A declared bound only validates the solution. An inferred upper bound of `object` does not introduce
+the declared bound:
+
+```py
+def bounded[T: A | B](value: T) -> T:
+    return value
+
+def bounded_with_upper[T: A | B](value: T, upper: Callable[[T], None]) -> T:
+    return value
+
+def _(any_value: Any, upper: Callable[[object], None]):
+    reveal_type(bounded(any_value))  # revealed: Any
+    reveal_type(bounded_with_upper(any_value, upper))  # revealed: Any
+```
+
+## Static lower bounds remain unchanged during promotion
+
+An unspecialized base can contribute gradual evidence for the same type variable as a specialized
+base. A static lower bound is still promoted directly.
+
+```py
+class Base[T]: ...
+class Specialized(Base[str]): ...
+class Unspecialized(Base): ...  # error: [missing-type-argument]
+class Mixed(Specialized, Unspecialized): ...
+
+def f[T](values: list[T], base: Base[T]) -> list[T]:
+    return values
+
+reveal_type(f([1], Mixed()))  # revealed: list[int | str]
+```
+
 ## Typevars in a union
 
 ```py

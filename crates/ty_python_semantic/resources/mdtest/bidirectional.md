@@ -1164,6 +1164,24 @@ def mean(data: DataFrame) -> float:
 x23: Mapping[Hashable, AggregateSpec] = {"col1": ["sum", mean], "col2": mean}
 ```
 
+## Recursive aliases remain stable in invariant collection contexts
+
+An invariant collection context can infer the same recursive type as both bounds. Because recursive
+inference introduces `Divergent`, intersecting those bounds can discard a union alternative.
+
+```py
+from collections.abc import MutableMapping, MutableSequence
+from typing import TypeAlias, TypedDict
+
+class Leaf(TypedDict, total=False):
+    path: str
+
+RecursiveValue: TypeAlias = int | Leaf | MutableSequence["RecursiveValue | None"] | MutableMapping[str, "RecursiveValue | None"]
+RecursiveMapping: TypeAlias = MutableMapping[str, RecursiveValue | None]
+
+recursive: RecursiveMapping = {}
+```
+
 ## Implicit generic class specialization
 
 Callable type context is also used to inform the implicit specialization of a generic class:

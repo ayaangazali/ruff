@@ -2588,7 +2588,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                     return Ok(Some(ty));
                 }
 
-                PathBounds::default_solve(db, self.env, self.constraints, path_bound)
+                PathBounds::final_solve(db, self.env, self.constraints, path_bound)
             },
         ) {
             Solutions::Unsatisfiable => return Err(()),

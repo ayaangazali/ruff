@@ -5889,8 +5889,6 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
         self.errors.extend(specialization_errors);
 
         // Attempt to promote any promotable types assigned to the specialization.
-        // The hook receives (typevar, bounds) and returns Some(ty) to override the default
-        // solution, or None to keep it.
         let maybe_promote = |typevar: BoundTypeVarInstance<'db>, bounds: &PathBound<'db>| {
             let bound_or_constraints = typevar.typevar(db).bound_or_constraints(db, self.env);
 
@@ -5922,8 +5920,20 @@ impl<'a, 'db> ArgumentTypeChecker<'a, 'db> {
                 return None;
             }
 
+            // Static lower bounds retain the existing promotion override. Gradual lower bounds
+            // must first be restricted by their inferred upper bounds.
             let lower = bounds.lower?;
-            let promoted = lower.promote(db, self.env);
+            let solution = if lower.is_fully_static(db, self.env) {
+                lower
+            } else {
+                let Ok(Some(solution)) = PathBounds::final_solve(db, self.env, constraints, bounds)
+                else {
+                    return None;
+                };
+                solution
+            };
+
+            let promoted = solution.promote(db, self.env);
 
             // If the TypeVar has an upper bound, only use the promoted type if it
             // still satisfies the bound.
