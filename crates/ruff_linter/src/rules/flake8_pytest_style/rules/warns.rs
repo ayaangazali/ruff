@@ -148,7 +148,7 @@ impl Violation for PytestWarnsTooBroad {
 /// ## References
 /// - [`pytest` documentation: `pytest.warns`](https://docs.pytest.org/en/latest/reference/reference.html#pytest-warns)
 #[derive(ViolationMetadata)]
-#[violation_metadata(preview_since = "0.9.2", category = "pedantic")]
+#[violation_metadata(preview_since = "0.9.2", category = "correctness")]
 pub(crate) struct PytestWarnsWithoutWarning;
 
 impl Violation for PytestWarnsWithoutWarning {
