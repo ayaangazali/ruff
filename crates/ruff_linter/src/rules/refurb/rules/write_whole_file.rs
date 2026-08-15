@@ -4,13 +4,14 @@ use ruff_python_ast::{
     self as ast, Expr, Stmt,
     visitor::{self, Visitor},
 };
+use ruff_python_semantic::analyze::type_inference::{PythonType, ResolvedPythonType};
 use ruff_text_size::Ranged;
 
 use crate::checkers::ast::Checker;
 use crate::codes::Category;
 use crate::fix::snippet::SourceCodeSnippet;
 use crate::importer::ImportRequest;
-use crate::rules::refurb::helpers::{FileOpen, OpenArgument, find_file_opens};
+use crate::rules::refurb::helpers::{FileOpen, OpenArgument, OpenMode, find_file_opens};
 use crate::{FixAvailability, Locator, Violation};
 
 /// ## What it does
@@ -37,6 +38,17 @@ use crate::{FixAvailability, Locator, Violation};
 ///
 /// ## Fix Safety
 /// This rule's fix is marked as unsafe if the replacement would remove comments attached to the original expression.
+///
+/// The fix is also marked as unsafe unless the written value is visibly of the type the
+/// open mode requires (a string for `"w"`, bytes for `"wb"`). `open` truncates the file
+/// as soon as it runs, so a `write` that raises `TypeError` still leaves an empty file
+/// behind, whereas `Path.write_text` and `Path.write_bytes` reject the value before
+/// touching the file:
+///
+/// ```python
+/// with open("file.txt", "w") as f:
+///     f.write(b"some bytes")  # raises, but "file.txt" is now empty
+/// ```
 ///
 /// ## References
 /// - [Python documentation: `Path.write_bytes`](https://docs.python.org/3/library/pathlib.html#pathlib.Path.write_bytes)
@@ -154,7 +166,7 @@ impl<'a> Visitor<'a> for WriteMatcher<'a, '_> {
                     );
 
                     if let Some(fix) =
-                        generate_fix(self.checker, &open, self.with_stmt, &suggestion)
+                        generate_fix(self.checker, &open, content, self.with_stmt, &suggestion)
                     {
                         diagnostic.set_fix(fix);
                     }
@@ -201,9 +213,29 @@ fn make_suggestion(open: &FileOpen<'_>, arg: &Expr, locator: &Locator) -> String
     }
 }
 
+/// Whether `content` is visibly of the type that `mode` requires.
+///
+/// `open` truncates the file the moment it runs, so `f.write(value)` with a value of the
+/// wrong type raises `TypeError` and leaves an empty file behind. `Path.write_text` and
+/// `Path.write_bytes` check the value first and leave the file alone, so the rewrite only
+/// preserves behavior when we can see that the value has the right type.
+fn content_matches_mode(mode: OpenMode, content: &Expr) -> bool {
+    matches!(
+        (mode, ResolvedPythonType::from(content)),
+        (
+            OpenMode::WriteText,
+            ResolvedPythonType::Atom(PythonType::String)
+        ) | (
+            OpenMode::WriteBytes,
+            ResolvedPythonType::Atom(PythonType::Bytes)
+        )
+    )
+}
+
 fn generate_fix(
     checker: &Checker,
     open: &FileOpen,
+    content: &Expr,
     with_stmt: &ast::StmtWith,
     suggestion: &str,
 ) -> Option<Fix> {
@@ -232,7 +264,9 @@ fn generate_fix(
 
     let replacement = format!("{target}.{suggestion}");
 
-    let applicability = if checker.comment_ranges().intersects(with_stmt.range()) {
+    let applicability = if checker.comment_ranges().intersects(with_stmt.range())
+        || !content_matches_mode(open.mode, content)
+    {
         Applicability::Unsafe
     } else {
         Applicability::Safe
