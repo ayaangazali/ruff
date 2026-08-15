@@ -107,3 +107,27 @@ for x in ("abc", "def"):
 # don't add extra parens for already parenthesized generators
 for x in ("abc", "def"):
     s.add((c for c in x))
+
+
+# https://github.com/astral-sh/ruff/issues/18575
+# OK: dropping the loop would leave the loop variable unbound
+def target_used_after_loop():
+    t = set()
+    for x in (2, 3):
+        t.add(x)
+    print(x)
+
+
+# OK: same, for one name of a tuple target
+def tuple_target_used_after_loop():
+    t = set()
+    for a, b in [(1, 2)]:
+        t.add(a)
+    print(b)
+
+
+# still flagged: the loop variable is not used afterwards
+def target_not_used_after_loop():
+    t = set()
+    for x in (2, 3):
+        t.add(x)

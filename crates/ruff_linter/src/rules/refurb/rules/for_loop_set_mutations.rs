@@ -1,6 +1,8 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
+use ruff_python_ast::helpers::any_over_expr;
 use ruff_python_ast::{Expr, Stmt, StmtFor};
 use ruff_python_semantic::analyze::typing;
+use ruff_text_size::Ranged;
 
 use crate::checkers::ast::Checker;
 use crate::codes::Category;
@@ -62,9 +64,53 @@ impl AlwaysFixableViolation for ForLoopSetMutations {
     }
 }
 
+/// Returns `true` if any name bound by the loop's target is read after the loop.
+///
+/// The replacement collapses the loop into a single `set` method call, so the loop variable is
+/// never bound. Reading it afterwards works before the change and raises `NameError` after it:
+///
+/// ```python
+/// for x in (2, 3):
+///     s.add(x)
+/// print(x)  # prints 3 today, `NameError` once the loop is gone
+/// ```
+///
+/// A `global` or `nonlocal` target is treated the same way, since the point of declaring it is
+/// to use the value somewhere else.
+fn target_used_after_loop(checker: &Checker, for_stmt: &StmtFor) -> bool {
+    let semantic = checker.semantic();
+
+    any_over_expr(&for_stmt.target, |expr| {
+        let Expr::Name(name) = expr else {
+            return false;
+        };
+
+        semantic
+            .bindings
+            .iter()
+            .filter(|binding| binding.range() == name.range())
+            .any(|binding| {
+                binding.is_global()
+                    || binding.is_nonlocal()
+                    || binding
+                        .references()
+                        .map(|reference| semantic.reference(reference))
+                        .any(|reference| for_stmt.end() < reference.start())
+            })
+    })
+}
+
 /// FURB142
 pub(crate) fn for_loop_set_mutations(checker: &Checker, for_stmt: &StmtFor) {
+    // `set.update` takes a synchronous iterable, so there is no single call that replaces
+    // `async for x in y: s.add(x)`.
+    if for_stmt.is_async {
+        return;
+    }
     if !for_stmt.orelse.is_empty() {
+        return;
+    }
+    if target_used_after_loop(checker, for_stmt) {
         return;
     }
     let [Stmt::Expr(stmt_expr)] = for_stmt.body.as_slice() else {
