@@ -395,4 +395,21 @@ help: Replace with `.update()`
     - for x in ("abc", "def"):
     -     s.add((c for c in x))
 108 + s.update((c for c in x) for x in ("abc", "def"))
+109 |
+    |
+
+FURB142 [*] Use of `set.add()` in a for loop
+   --> FURB142.py:132:5
+    |
+130 |   def target_not_used_after_loop():
+131 |       t = set()
+132 | /     for x in (2, 3):
+133 | |         t.add(x)
+    | |________________^
+help: Replace with `.update()`
+    |
+131 |     t = set()
+    -     for x in (2, 3):
+    -         t.add(x)
+132 +     t.update((2, 3))
     |

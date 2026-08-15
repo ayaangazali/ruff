@@ -42,5 +42,8 @@ pub(crate) fn deferred_for_loops(checker: &mut Checker) {
         if checker.is_rule_enabled(Rule::ManualListComprehension) {
             perflint::rules::manual_list_comprehension(checker, stmt_for);
         }
+        if checker.is_rule_enabled(Rule::ForLoopSetMutations) {
+            refurb::rules::for_loop_set_mutations(checker, stmt_for);
+        }
     }
 }
