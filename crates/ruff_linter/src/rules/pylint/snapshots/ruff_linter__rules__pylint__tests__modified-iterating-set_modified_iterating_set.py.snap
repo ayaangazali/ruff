@@ -115,3 +115,20 @@ help: Iterate over a copy of `odds`
 25 |     if num > 1:
    |
 note: This is an unsafe fix and may change runtime behavior
+
+PLE4703 [*] Iterated set `nums` is modified within the `for` loop
+  --> modified_iterating_set.py:67:5
+   |
+65 |       nums = {1, 2, 3}
+66 |       nums = {1, 2, 3}
+67 | /     for num in nums:  # PLE4703
+68 | |         nums.add(num + 5)
+   | |_________________________^
+help: Iterate over a copy of `nums`
+   |
+66 |     nums = {1, 2, 3}
+   -     for num in nums:  # PLE4703
+67 +     for num in nums.copy():  # PLE4703
+68 |         nums.add(num + 5)
+   |
+note: This is an unsafe fix and may change runtime behavior

@@ -189,3 +189,28 @@ not my_dict.get("key", False, foo=...)
 # https://github.com/astral-sh/ruff/issues/18798
 d = {}
 not d.get("key", (False))
+
+
+# https://github.com/astral-sh/ruff/issues/18855
+def shadows_builtin():
+    dict = {"a": 1}
+    not dict.get("key", False)
+
+
+def rebound_dict():
+    d = {}
+    d = {"a": 1}
+    not d.get("key", False)
+
+
+# OK: one of the visible bindings is not a dict
+def not_always_a_dict(cond):
+    if cond:
+        a = set()
+    else:
+        a = {}
+    not a.get("key", False)
+
+
+# OK: `dict` here is the builtin class, not a dict
+not dict.get("key", False)

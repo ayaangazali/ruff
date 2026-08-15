@@ -443,4 +443,35 @@ help: Remove falsy fallback from `dict.get()`
 190 | d = {}
     - not d.get("key", (False))
 191 + not d.get("key")
+192 |
+    |
+
+RUF056 [*] Avoid providing a falsy fallback to `dict.get()` in boolean test positions. The default fallback `None` is already falsy.
+   --> RUF056.py:197:25
+    |
+195 | def shadows_builtin():
+196 |     dict = {"a": 1}
+197 |     not dict.get("key", False)
+    |                         ^^^^^
+help: Remove falsy fallback from `dict.get()`
+    |
+196 |     dict = {"a": 1}
+    -     not dict.get("key", False)
+197 +     not dict.get("key")
+198 |
+    |
+
+RUF056 [*] Avoid providing a falsy fallback to `dict.get()` in boolean test positions. The default fallback `None` is already falsy.
+   --> RUF056.py:203:22
+    |
+201 |     d = {}
+202 |     d = {"a": 1}
+203 |     not d.get("key", False)
+    |                      ^^^^^
+help: Remove falsy fallback from `dict.get()`
+    |
+202 |     d = {"a": 1}
+    -     not d.get("key", False)
+203 +     not d.get("key")
+204 |
     |

@@ -58,3 +58,26 @@ def add_colors():
 
 add_colors()
 print(colors)
+
+
+# https://github.com/astral-sh/ruff/issues/18818
+def rebound_set():
+    nums = {1, 2, 3}
+    nums = {1, 2, 3}
+    for num in nums:  # PLE4703
+        nums.add(num + 5)
+
+
+# OK: one of the visible bindings is not a set
+def not_always_a_set(cond):
+    if cond:
+        a = {1, 2}
+    else:
+        a = {}
+    for x in a:
+        a.add(x)
+
+
+# OK: `set` here is the builtin class, not a set
+for item in set:
+    set.add(item)
