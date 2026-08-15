@@ -47,11 +47,51 @@ pub enum SubscriptKind {
 }
 
 pub fn is_known_to_be_of_type_dict(semantic: &SemanticModel, expr: &ExprName) -> bool {
-    let Some(binding) = semantic.only_binding(expr).map(|id| semantic.binding(id)) else {
+    all_bindings_satisfy(semantic, expr, is_dict)
+}
+
+pub fn is_known_to_be_of_type_set(semantic: &SemanticModel, expr: &ExprName) -> bool {
+    all_bindings_satisfy(semantic, expr, is_set)
+}
+
+/// Returns `true` if every binding `expr` could refer to satisfies `predicate`.
+///
+/// A name can have more than one binding in its scope, either because it is assigned more than
+/// once or because it shadows a builtin. Looking only at the binding the name resolves to would
+/// miss the first example below, and looking at that binding while ignoring the others would
+/// wrongly accept the second:
+///
+/// ```python
+/// dict = {"a": 1}
+/// dict.get(key, False)  # one visible binding, and it is a dict
+///
+/// if condition:
+///     a = set()
+/// else:
+///     a = {}
+/// a.get(key, False)  # two visible bindings, and one of them is not a dict
+/// ```
+fn all_bindings_satisfy(
+    semantic: &SemanticModel,
+    expr: &ExprName,
+    predicate: impl Fn(&Binding, &SemanticModel) -> bool,
+) -> bool {
+    let Some(binding_id) = semantic.resolve_name(expr) else {
         return false;
     };
 
-    is_dict(binding, semantic)
+    let scope = &semantic.scopes[semantic.binding(binding_id).scope];
+    let mut bindings = scope
+        .get_all(expr.id.as_str())
+        .map(|id| semantic.binding(id))
+        // A builtin that has been shadowed is no longer something the name can refer to, so it
+        // neither satisfies nor violates the check. Dropping it here is also what keeps a name
+        // that refers to nothing but a builtin, such as the `dict` class itself, from passing
+        // vacuously below.
+        .filter(|binding| !binding.kind.is_builtin())
+        .peekable();
+
+    bindings.peek().is_some() && bindings.all(|binding| predicate(binding, semantic))
 }
 
 pub fn match_annotated_subscript<'a>(

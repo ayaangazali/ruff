@@ -2,7 +2,7 @@ use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::helpers::any_over_body;
 use ruff_python_ast::name::Name;
 use ruff_python_ast::{self as ast, Expr, StmtFor};
-use ruff_python_semantic::analyze::typing::is_set;
+use ruff_python_semantic::analyze::typing::is_known_to_be_of_type_set;
 use ruff_text_size::Ranged;
 
 use crate::checkers::ast::Checker;
@@ -71,10 +71,10 @@ pub(crate) fn modified_iterating_set(checker: &Checker, for_stmt: &StmtFor) {
         return;
     };
 
-    let Some(binding_id) = checker.semantic().only_binding(name) else {
+    let Some(binding_id) = checker.semantic().resolve_name(name) else {
         return;
     };
-    if !is_set(checker.semantic().binding(binding_id), checker.semantic()) {
+    if !is_known_to_be_of_type_set(checker.semantic(), name) {
         return;
     }
 
@@ -91,7 +91,7 @@ pub(crate) fn modified_iterating_set(checker: &Checker, for_stmt: &StmtFor) {
             return false;
         };
 
-        let Some(value_id) = checker.semantic().only_binding(value) else {
+        let Some(value_id) = checker.semantic().resolve_name(value) else {
             return false;
         };
 
