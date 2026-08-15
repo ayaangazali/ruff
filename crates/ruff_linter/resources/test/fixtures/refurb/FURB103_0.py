@@ -167,3 +167,13 @@ with open("tmp_path/pyproject.toml", "w") as f:
 # `open` accepts a file descriptor, but `Path` does not
 with open(3, "w") as f:
     f.write("test")
+
+
+# See: https://github.com/astral-sh/ruff/issues/26920
+# `open` truncates the file before `write` rejects the `bytes` value, so the file is left
+# empty. `Path.write_text` rejects it without touching the file, so the fix is unsafe.
+with open("file.txt", "w") as f:
+    f.write(b"test")
+
+with open("file.txt", "wb") as f:
+    f.write("test")
