@@ -163,3 +163,24 @@ async with asyncio.timeout(1):
 async with asyncio.timeout(1), A():
     async with B():
         pass
+
+# https://github.com/astral-sh/ruff/issues/27800
+# SIM117, on the inner pair. The sync parent cannot be merged with an `async with`, so it reports
+# nothing itself and must not stop the mergeable pair below it from being reported.
+with A() as a:
+    async with B() as b:
+        async with C() as c:
+            print("hello")
+
+# SIM117, the same the other way around.
+async with A() as a:
+    with B() as b:
+        with C() as c:
+            print("hello")
+
+# SIM117, on the inner pair. `asyncio.timeout` has to stay on a line of its own, so the parent
+# reports nothing itself and must not suppress the mergeable pair below it either.
+async with asyncio.timeout(1):
+    async with B() as b:
+        async with C() as c:
+            print("hello")

@@ -124,6 +124,22 @@ fn explicit_with_items(checker: &Checker, with_items: &[WithItem]) -> bool {
         })
 }
 
+/// Check whether an outer `with` statement can be combined with the `with` statement that makes up
+/// its body.
+///
+/// A sync `with` cannot absorb an `async with` or vice versa, and neither statement may hold an
+/// item that has to stay on a line of its own, such as `asyncio.timeout`.
+fn is_mergeable_with(
+    checker: &Checker,
+    outer: &ast::StmtWith,
+    inner_is_async: bool,
+    inner_items: &[WithItem],
+) -> bool {
+    outer.is_async == inner_is_async
+        && !explicit_with_items(checker, &outer.items)
+        && !explicit_with_items(checker, inner_items)
+}
+
 /// SIM117
 pub(crate) fn multiple_with_statements(
     checker: &Checker,
@@ -149,20 +165,27 @@ pub(crate) fn multiple_with_statements(
     //     with B(), C():
     //         print("hello")
     // ```
-    if let Some(Stmt::With(ast::StmtWith { body, .. })) = with_parent {
-        if body.len() == 1 {
-            return;
-        }
+    //
+    // Deferring to the parent is only correct when the parent will actually report, which requires
+    // that it can be merged with this statement in the first place. A parent that cannot be merged
+    // stays silent, so bailing out here too would leave a mergeable pair further down unreported:
+    // ```python
+    // with A():
+    //     async with B():
+    //         async with C():
+    //             print("hello")
+    // ```
+    // Here `B` and `C` can be combined, but `A` cannot absorb `B`. The same holds when the parent
+    // holds an item such as `asyncio.timeout` that has to stay on its own line.
+    if let Some(Stmt::With(parent)) = with_parent
+        && parent.body.len() == 1
+        && is_mergeable_with(checker, parent, with_stmt.is_async, &with_stmt.items)
+    {
+        return;
     }
 
     if let Some((is_async, items, _body)) = next_with(&with_stmt.body) {
-        if is_async != with_stmt.is_async {
-            // One of the statements is an async with, while the other is not,
-            // we can't merge those statements.
-            return;
-        }
-
-        if explicit_with_items(checker, &with_stmt.items) || explicit_with_items(checker, items) {
+        if !is_mergeable_with(checker, with_stmt, is_async, items) {
             return;
         }
 
