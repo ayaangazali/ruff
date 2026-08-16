@@ -310,4 +310,67 @@ help: Combine `with` statements
     -         pass
 163 + async with asyncio.timeout(1), A(), B():
 164 +     pass
+165 |
+    |
+
+SIM117 [*] Use a single `with` statement with multiple contexts instead of nested `with` statements
+   --> SIM117.py:171:5
+    |
+169 |   # nothing itself and must not stop the mergeable pair below it from being reported.
+170 |   with A() as a:
+171 | /     async with B() as b:
+172 | |         async with C() as c:
+    | |____________________________^
+173 |               print("hello")
+    |
+help: Combine `with` statements
+    |
+170 | with A() as a:
+    -     async with B() as b:
+    -         async with C() as c:
+    -             print("hello")
+171 +     async with B() as b, C() as c:
+172 +         print("hello")
+173 |
+    |
+
+SIM117 [*] Use a single `with` statement with multiple contexts instead of nested `with` statements
+   --> SIM117.py:177:5
+    |
+175 |   # SIM117, the same the other way around.
+176 |   async with A() as a:
+177 | /     with B() as b:
+178 | |         with C() as c:
+    | |______________________^
+179 |               print("hello")
+    |
+help: Combine `with` statements
+    |
+176 | async with A() as a:
+    -     with B() as b:
+    -         with C() as c:
+    -             print("hello")
+177 +     with B() as b, C() as c:
+178 +         print("hello")
+179 |
+    |
+
+SIM117 [*] Use a single `with` statement with multiple contexts instead of nested `with` statements
+   --> SIM117.py:184:5
+    |
+182 |   # reports nothing itself and must not suppress the mergeable pair below it either.
+183 |   async with asyncio.timeout(1):
+184 | /     async with B() as b:
+185 | |         async with C() as c:
+    | |____________________________^
+186 |               print("hello")
+    |
+help: Combine `with` statements
+    |
+183 | async with asyncio.timeout(1):
+    -     async with B() as b:
+    -         async with C() as c:
+    -             print("hello")
+184 +     async with B() as b, C() as c:
+185 +         print("hello")
     |
