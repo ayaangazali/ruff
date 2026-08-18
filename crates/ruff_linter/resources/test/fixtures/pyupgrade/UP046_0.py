@@ -142,3 +142,12 @@ class DefaultOnlyTypeVar(Generic[W]):  # -> [W = int]
 class Outer:
     class Inner(Generic[T]):
         var: T
+
+
+# constraints unpacked from a runtime iterable have no PEP 695 spelling, so no fix is offered
+constraints = (int, str)
+StarredConstraints = TypeVar("StarredConstraints", *constraints)
+
+
+class UnpackedConstraints(Generic[StarredConstraints]):
+    var: StarredConstraints
