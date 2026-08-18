@@ -253,3 +253,12 @@ UP046 Generic class `TooManyGenerics` uses `Generic` subclass instead of type pa
 100 |     var: S
     |
 help: Use type parameters
+
+UP046 Generic class `UnpackedConstraints` uses `Generic` subclass instead of type parameters
+   --> UP046_0.py:152:27
+    |
+152 | class UnpackedConstraints(Generic[StarredConstraints]):
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+153 |     var: StarredConstraints
+    |
+help: Use type parameters

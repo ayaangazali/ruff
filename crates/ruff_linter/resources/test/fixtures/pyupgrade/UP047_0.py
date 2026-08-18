@@ -63,3 +63,12 @@ def multi_param(t: list[T], c: Callable[[T], None]) -> T:
 def outer():
     def inner(t: T) -> T:
         return t
+
+
+# constraints unpacked from a runtime iterable have no PEP 695 spelling
+constraints = (int, str)
+StarredConstraints = TypeVar("StarredConstraints", *constraints)
+
+
+def unpacked_constraints(var: StarredConstraints) -> StarredConstraints:
+    return var
