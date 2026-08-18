@@ -345,6 +345,11 @@ pub(crate) const fn is_pep604_future_annotations_fix_enabled(settings: &LinterSe
     settings.preview.is_enabled()
 }
 
+// https://github.com/astral-sh/ruff/issues/27537
+pub(crate) const fn is_arg_rebound_parameter_enabled(settings: &LinterSettings) -> bool {
+    settings.preview.is_enabled()
+}
+
 // https://github.com/astral-sh/ruff/pull/25614
 // TODO(brent) Remove ecosystem selector normalization when stabilizing human-readable rule names:
 // https://github.com/astral-sh/ruff/pull/27158

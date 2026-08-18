@@ -3,6 +3,8 @@ use ruff_python_ast::{Parameter, Parameters, Stmt, StmtExpr, StmtFunctionDef, St
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_semantic::analyze::{function_type, visibility};
+
+use crate::preview::is_arg_rebound_parameter_enabled;
 use ruff_python_semantic::{Scope, ScopeKind, SemanticModel};
 use ruff_text_size::{Ranged, TextRange};
 
@@ -352,16 +354,34 @@ fn call<'a>(
     let semantic = checker.semantic();
     let dummy_variable_rgx = &checker.settings().dummy_variable_rgx;
     for arg in parameters {
-        let Some(binding) = scope
-            .get(arg.name())
-            .map(|binding_id| semantic.binding(binding_id))
-        else {
+        // Look past any later binding of the same name. Rebinding a parameter does not make the
+        // argument itself used, so we need the argument binding rather than whichever binding
+        // happens to be current at the end of the scope:
+        //
+        // ```python
+        // def f(value):
+        //     value = 1
+        //     print(value)
+        // ```
+        //
+        // Here `print` reads the assignment, never the argument, so `value` is unused. Reads that
+        // do reach the argument, as in `value = value or 0`, are recorded against the argument
+        // binding and still count as a use.
+        let binding = if is_arg_rebound_parameter_enabled(checker.settings()) {
+            scope
+                .get_all(arg.name())
+                .map(|binding_id| semantic.binding(binding_id))
+                .find(|binding| binding.kind.is_argument())
+        } else {
+            scope
+                .get(arg.name())
+                .map(|binding_id| semantic.binding(binding_id))
+                .filter(|binding| binding.kind.is_argument())
+        };
+        let Some(binding) = binding else {
             continue;
         };
-        if binding.kind.is_argument()
-            && binding.is_unused()
-            && !dummy_variable_rgx.is_match(arg.name())
-        {
+        if binding.is_unused() && !dummy_variable_rgx.is_match(arg.name()) {
             argumentable.check_for(checker, arg.name.to_string(), binding.range());
         }
     }

@@ -28,6 +28,22 @@ mod tests {
         Ok(())
     }
 
+    #[test_case(Rule::UnusedFunctionArgument, Path::new("ARG.py"))]
+    #[test_case(Rule::UnusedMethodArgument, Path::new("ARG.py"))]
+    fn preview_rules(rule_code: Rule, path: &Path) -> Result<()> {
+        let snapshot = format!(
+            "preview__{}_{}",
+            rule_code.name(),
+            path.to_string_lossy()
+        );
+        let diagnostics = test_path(
+            Path::new("flake8_unused_arguments").join(path).as_path(),
+            &settings::LinterSettings::for_rule(rule_code).with_preview_mode(),
+        )?;
+        assert_diagnostics!(snapshot, diagnostics);
+        Ok(())
+    }
+
     #[test]
     fn ignore_variadic_names() -> Result<()> {
         let diagnostics = test_path(
