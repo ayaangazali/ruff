@@ -268,3 +268,24 @@ def f(
 ) -> None:
     TypeVar(**kwargs)
 
+
+###
+# Arguments that are rebound before ever being read.
+###
+
+
+def rebound(value):
+    value = 1
+    print(value)
+
+
+# OK: the argument is read while computing the new value.
+def rebound_from_itself(value):
+    value = value or 0
+    print(value)
+
+
+class D:
+    def method(self, value):
+        value = 1
+        print(value)
