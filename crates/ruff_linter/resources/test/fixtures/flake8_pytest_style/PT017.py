@@ -17,3 +17,12 @@ def test_error():
         something()
     except Exception as e:
         assert e.message, "blah blah"
+
+
+# https://github.com/astral-sh/ruff/issues/27870
+# One diagnostic per assertion, even when the exception is named more than once.
+def test_error_repeated_reference():
+    try:
+        something()
+    except ZeroDivisionError as e:
+        assert len(e.args) == 1, e.args

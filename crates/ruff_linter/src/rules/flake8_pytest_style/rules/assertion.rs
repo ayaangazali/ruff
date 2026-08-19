@@ -9,7 +9,7 @@ use libcst_native::{
 };
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
-use ruff_python_ast::helpers::Truthiness;
+use ruff_python_ast::helpers::{Truthiness, any_over_expr};
 use ruff_python_ast::token::parenthesized_range;
 use ruff_python_ast::visitor::Visitor;
 use ruff_python_ast::{
@@ -235,7 +235,6 @@ impl Violation for PytestUnittestAssertion {
 /// the exception name.
 struct ExceptionHandlerVisitor<'a, 'b> {
     exception_name: &'a str,
-    current_assert: Option<&'a Stmt>,
     checker: &'a Checker<'b>,
 }
 
@@ -243,40 +242,40 @@ impl<'a, 'b> ExceptionHandlerVisitor<'a, 'b> {
     const fn new(checker: &'a Checker<'b>, exception_name: &'a str) -> Self {
         Self {
             exception_name,
-            current_assert: None,
             checker,
         }
+    }
+
+    /// Returns `true` if `expr` mentions the name the exception was bound to.
+    fn references_exception(&self, expr: &Expr) -> bool {
+        any_over_expr(
+            expr,
+            |expr| matches!(expr, Expr::Name(ast::ExprName { id, .. }) if id.as_str() == self.exception_name),
+        )
     }
 }
 
 impl<'a> Visitor<'a> for ExceptionHandlerVisitor<'a, '_> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
-        match stmt {
-            Stmt::Assert(_) => {
-                self.current_assert = Some(stmt);
-                visitor::walk_stmt(self, stmt);
-                self.current_assert = None;
+        // The diagnostic is about the assertion as a whole, so report it once per `assert`
+        // statement rather than once per mention of the exception. An assertion can name the
+        // exception more than once, as in `assert len(e.args) == 1, e.args`.
+        if let Stmt::Assert(ast::StmtAssert { test, msg, .. }) = stmt {
+            if self.references_exception(test)
+                || msg
+                    .as_deref()
+                    .is_some_and(|msg| self.references_exception(msg))
+            {
+                self.checker.report_diagnostic(
+                    PytestAssertInExcept {
+                        name: self.exception_name.to_string(),
+                    },
+                    stmt.range(),
+                );
             }
-            _ => visitor::walk_stmt(self, stmt),
+            return;
         }
-    }
-
-    fn visit_expr(&mut self, expr: &'a Expr) {
-        match expr {
-            Expr::Name(ast::ExprName { id, .. }) => {
-                if let Some(current_assert) = self.current_assert {
-                    if id.as_str() == self.exception_name {
-                        self.checker.report_diagnostic(
-                            PytestAssertInExcept {
-                                name: id.to_string(),
-                            },
-                            current_assert.range(),
-                        );
-                    }
-                }
-            }
-            _ => visitor::walk_expr(self, expr),
-        }
+        visitor::walk_stmt(self, stmt);
     }
 }
 
