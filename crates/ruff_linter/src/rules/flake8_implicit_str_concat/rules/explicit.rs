@@ -1,13 +1,13 @@
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::token::{TokenKind, parenthesized_range};
-use ruff_python_ast::{self as ast, Expr, Operator};
+use ruff_python_ast::{self as ast, Expr, Operator, Stmt};
 use ruff_python_trivia::is_python_whitespace;
 use ruff_source_file::LineRanges;
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
 use crate::checkers::ast::Checker;
 use crate::codes::Category;
-use crate::{Edit, Fix, FixAvailability, Violation};
+use crate::{Applicability, Edit, Fix, FixAvailability, Violation};
 
 /// ## What it does
 /// Checks for string literals that are explicitly concatenated (using the
@@ -106,15 +106,56 @@ pub(crate) fn explicit(checker: &Checker, expr: &Expr) {
                     return;
                 }
 
-                if let Some(fix) = generate_fix(checker, bin_op) {
-                    diagnostic.set_fix(fix);
+                if let Some(edit) = generate_edit(checker, bin_op) {
+                    // Dropping the `+` leaves a bare string literal behind. In docstring
+                    // position that turns a statement Python ignores into the module, class,
+                    // or function docstring, so `__doc__` changes at runtime:
+                    //
+                    // ```python
+                    // (
+                    //     "docstring"
+                    //     + "?"
+                    // )
+                    // ```
+                    //
+                    // is `__doc__ = None` before the fix and `__doc__ = "docstring?"` after.
+                    let applicability = if is_in_docstring_position(checker, expr) {
+                        Applicability::Unsafe
+                    } else {
+                        Applicability::Safe
+                    };
+                    diagnostic.set_fix(Fix::applicable_edit(edit, applicability));
                 }
             }
         }
     }
 }
 
-fn generate_fix(checker: &Checker, expr_bin_op: &ast::ExprBinOp) -> Option<Fix> {
+/// Returns `true` if `expr` is the whole of the first statement in a module, class, or function
+/// body, which is where Python looks for a docstring.
+fn is_in_docstring_position(checker: &Checker, expr: &Expr) -> bool {
+    let semantic = checker.semantic();
+
+    let statement = semantic.current_statement();
+    let Stmt::Expr(ast::StmtExpr { value, .. }) = statement else {
+        return false;
+    };
+    if value.range() != expr.range() {
+        return false;
+    }
+
+    let body = match semantic.current_statement_parent() {
+        Some(Stmt::FunctionDef(function_def)) => &*function_def.body,
+        Some(Stmt::ClassDef(class_def)) => &*class_def.body,
+        Some(_) => return false,
+        None => checker.module.python_ast,
+    };
+
+    body.first()
+        .is_some_and(|first| first.range() == statement.range())
+}
+
+fn generate_edit(checker: &Checker, expr_bin_op: &ast::ExprBinOp) -> Option<Edit> {
     let ast::ExprBinOp { left, right, .. } = expr_bin_op;
 
     let between_operands_range = TextRange::new(left.end(), right.start());
@@ -142,8 +183,8 @@ fn generate_fix(checker: &Checker, expr_bin_op: &ast::ExprBinOp) -> Option<Fix> 
         before_plus.trim_end_matches(is_python_whitespace)
     };
 
-    Some(Fix::safe_edit(Edit::range_replacement(
+    Some(Edit::range_replacement(
         format!("{before_plus}{after_plus}"),
         between_operands_range,
-    )))
+    ))
 }

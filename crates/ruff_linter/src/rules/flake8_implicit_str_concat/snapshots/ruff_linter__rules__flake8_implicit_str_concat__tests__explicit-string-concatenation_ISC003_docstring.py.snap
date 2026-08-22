@@ -1,0 +1,77 @@
+---
+source: crates/ruff_linter/src/rules/flake8_implicit_str_concat/mod.rs
+---
+ISC003 [*] Explicitly concatenated string should be implicitly concatenated
+ --> ISC003_docstring.py:2:5
+  |
+1 |   (
+2 | /     "module docstring position"
+3 | |     + "?"
+  | |_________^
+4 |   )
+  |
+help: Remove redundant '+' operator to implicitly concatenate
+  |
+2 |     "module docstring position"
+  -     + "?"
+3 +      "?"
+4 | )
+  |
+note: This is an unsafe fix and may change runtime behavior
+
+ISC003 [*] Explicitly concatenated string should be implicitly concatenated
+  --> ISC003_docstring.py:9:9
+   |
+ 7 |   def function():
+ 8 |       (
+ 9 | /         "function docstring position"
+10 | |         + "?"
+   | |_____________^
+11 |       )
+12 |       return 1
+   |
+help: Remove redundant '+' operator to implicitly concatenate
+   |
+9  |         "function docstring position"
+   -         + "?"
+10 +          "?"
+11 |     )
+   |
+note: This is an unsafe fix and may change runtime behavior
+
+ISC003 [*] Explicitly concatenated string should be implicitly concatenated
+  --> ISC003_docstring.py:17:9
+   |
+15 |   class Class:
+16 |       (
+17 | /         "class docstring position"
+18 | |         + "?"
+   | |_____________^
+19 |       )
+   |
+help: Remove redundant '+' operator to implicitly concatenate
+   |
+17 |         "class docstring position"
+   -         + "?"
+18 +          "?"
+19 |     )
+   |
+note: This is an unsafe fix and may change runtime behavior
+
+ISC003 [*] Explicitly concatenated string should be implicitly concatenated
+  --> ISC003_docstring.py:24:5
+   |
+22 |   # Not a docstring position, so the fix stays safe.
+23 |   (
+24 | /     "after another statement"
+25 | |     + "?"
+   | |_________^
+26 |   )
+   |
+help: Remove redundant '+' operator to implicitly concatenate
+   |
+24 |     "after another statement"
+   -     + "?"
+25 +      "?"
+26 | )
+   |
