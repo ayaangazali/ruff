@@ -436,3 +436,56 @@ help: Use the `type` keyword
 123 |     # comment1
     |
 note: This is an unsafe fix and may change runtime behavior
+
+UP040 [*] Type alias `MultilineUnion` uses `TypeAliasType` assignment instead of the `type` keyword
+   --> UP040.py:140:1
+    |
+138 |   # The union below is spread over several lines only because it sits inside the call's
+139 |   # parentheses, which the fix removes, so the fix has to supply parentheses of its own.
+140 | / MultilineUnion = TypeAliasType(
+141 | |     "MultilineUnion",
+142 | |     int
+143 | |     | str
+144 | |     | bytes,
+145 | | )
+    | |_^
+146 |
+147 |   # The line breaks here are already inside the subscript, so no extra parentheses are needed.
+    |
+help: Use the `type` keyword
+    |
+139 | # parentheses, which the fix removes, so the fix has to supply parentheses of its own.
+    - MultilineUnion = TypeAliasType(
+    -     "MultilineUnion",
+    -     int
+140 + type MultilineUnion = (int
+141 |     | str
+    -     | bytes,
+    - )
+142 +     | bytes)
+143 |
+    |
+
+UP040 [*] Type alias `MultilineSubscript` uses `TypeAliasType` assignment instead of the `type` keyword
+   --> UP040.py:148:1
+    |
+147 |   # The line breaks here are already inside the subscript, so no extra parentheses are needed.
+148 | / MultilineSubscript = TypeAliasType(
+149 | |     "MultilineSubscript",
+150 | |     list[
+151 | |         int,
+152 | |     ],
+153 | | )
+    | |_^
+help: Use the `type` keyword
+    |
+147 | # The line breaks here are already inside the subscript, so no extra parentheses are needed.
+    - MultilineSubscript = TypeAliasType(
+    -     "MultilineSubscript",
+    -     list[
+148 + type MultilineSubscript = list[
+149 |         int,
+    -     ],
+    - )
+150 +     ]
+    |
