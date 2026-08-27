@@ -2,7 +2,7 @@ use itertools::Itertools;
 
 use ruff_macros::{ViolationMetadata, derive_message_formats};
 use ruff_python_ast::name::Name;
-use ruff_python_ast::token::parenthesized_range;
+use ruff_python_ast::token::{TokenKind, Tokens, parenthesized_range};
 use ruff_python_ast::visitor::Visitor;
 use ruff_python_ast::{Expr, ExprCall, ExprName, Keyword, StmtAnnAssign, StmtAssign, StmtRef};
 use ruff_text_size::{Ranged, TextRange};
@@ -251,6 +251,40 @@ pub(crate) fn non_pep695_type_alias(checker: &Checker, stmt: &StmtAnnAssign) {
 }
 
 /// Generate a [`Diagnostic`] for a non-PEP 695 type alias or type alias type.
+/// Returns `true` if `value` is written across more than one line at a point where nothing
+/// brackets it.
+///
+/// Such a value stays valid only while something else supplies the brackets. Here it is the
+/// parentheses of the `TypeAliasType(...)` call, which the rewrite deletes:
+///
+/// ```python
+/// Bug = TypeAliasType(
+///     "Bug",
+///     First
+///     | Second,
+/// )
+/// ```
+///
+/// Copying that across unchanged would produce `type Bug = First\n    | Second`, which does not
+/// parse. A value whose line breaks all sit inside its own brackets, such as `list[\n    int,\n]`,
+/// needs no help.
+fn spans_lines_unbracketed(value: &Expr, tokens: &Tokens) -> bool {
+    let mut depth = 0u32;
+
+    for token in tokens.in_range(value.range()) {
+        match token.kind() {
+            TokenKind::NonLogicalNewline | TokenKind::Newline if depth == 0 => return true,
+            TokenKind::Lpar | TokenKind::Lsqb | TokenKind::Lbrace => depth += 1,
+            TokenKind::Rpar | TokenKind::Rsqb | TokenKind::Rbrace => {
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 fn create_diagnostic(
     checker: &Checker,
     stmt: StmtRef,
@@ -276,14 +310,16 @@ fn create_diagnostic(
     let tokens = checker.tokens();
     let comment_ranges = checker.comment_ranges();
 
-    let range_with_parentheses =
-        parenthesized_range(value.into(), stmt.into(), tokens).unwrap_or(value.range());
+    let parentheses = parenthesized_range(value.into(), stmt.into(), tokens);
+    let range_with_parentheses = parentheses.unwrap_or(value.range());
 
-    let content = format!(
-        "type {name}{type_params} = {value}",
-        type_params = DisplayTypeVars { type_vars, source },
-        value = &source[range_with_parentheses]
-    );
+    let type_params = DisplayTypeVars { type_vars, source };
+    let value_source = &source[range_with_parentheses];
+    let content = if parentheses.is_none() && spans_lines_unbracketed(value, tokens) {
+        format!("type {name}{type_params} = ({value_source})")
+    } else {
+        format!("type {name}{type_params} = {value_source}")
+    };
     let edit = Edit::range_replacement(content, stmt.range());
 
     let applicability =
