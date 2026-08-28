@@ -26,6 +26,16 @@ use crate::{Edit, Fix, FixAvailability, Violation};
 /// A = math.pi * r**2
 /// ```
 ///
+/// ## Fix safety
+/// This fix is marked unsafe because a literal that happens to look like a mathematical constant
+/// is not necessarily meant to be one. Replacing it changes the value the program computes with:
+///
+/// ```python
+/// harvest_tonnes = 3.14  # a measurement that merely resembles π
+/// ```
+///
+/// Rewriting that to `math.pi` silently swaps in 3.141592653589793.
+///
 /// ## References
 /// - [Python documentation: `math` constants](https://docs.python.org/3/library/math.html#constants)
 #[derive(ViolationMetadata)]
@@ -78,7 +88,7 @@ fn convert_to_constant(
         literal.start(),
         checker.semantic(),
     )?;
-    Ok(Fix::safe_edits(
+    Ok(Fix::unsafe_edits(
         Edit::range_replacement(binding, literal.range()),
         [edit],
     ))
