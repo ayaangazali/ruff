@@ -117,6 +117,17 @@ impl PytestContextType {
     }
 }
 
+/// Returns `true` if `call` is one of the context expressions of `stmt`.
+fn is_with_item(stmt: &Stmt, call: &ast::ExprCall) -> bool {
+    let Stmt::With(with_stmt) = stmt else {
+        return false;
+    };
+    with_stmt
+        .items
+        .iter()
+        .any(|item| item.context_expr.range() == call.range())
+}
+
 /// RUF061
 pub(crate) fn legacy_raises_warns_deprecated_call(checker: &Checker, call: &ast::ExprCall) {
     let semantic = checker.semantic();
@@ -133,10 +144,25 @@ pub(crate) fn legacy_raises_warns_deprecated_call(checker: &Checker, call: &ast:
         return;
     }
 
+    let stmt = semantic.current_statement();
+
+    // A call that is already the subject of a `with` is in the form this rule asks for, whatever
+    // its arguments look like. Ruff still finds a `func` argument in
+    //
+    // ```python
+    // with pytest.raises(ValueError, "oops"):
+    //     ...
+    // ```
+    //
+    // where the author meant `match="oops"`, but telling them to use the context-manager form
+    // when they already are is not useful.
+    if is_with_item(stmt, call) {
+        return;
+    }
+
     let mut diagnostic =
         checker.report_diagnostic(LegacyFormPytestRaises { context_type }, call.range());
 
-    let stmt = semantic.current_statement();
     if !has_leading_content(stmt.start(), checker.source())
         && !has_trailing_content(stmt.end(), checker.source())
     {

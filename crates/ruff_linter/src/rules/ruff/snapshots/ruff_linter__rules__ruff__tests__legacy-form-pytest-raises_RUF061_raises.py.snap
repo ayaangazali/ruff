@@ -95,5 +95,6 @@ help: Use `pytest.raises()` as a context-manager
    -     pytest.raises(ZeroDivisionError, lambda: 1 / 0)
 40 +     with pytest.raises(ZeroDivisionError):
 41 +         (lambda: 1 / 0)()
+42 |
    |
 note: This is an unsafe fix and may change runtime behavior
